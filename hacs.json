@@ -1,0 +1,5 @@
+{
+  "name": "hass-wybot",
+  "render_readme": true,
+  "homeassistant": "2024.8.3"
+}
