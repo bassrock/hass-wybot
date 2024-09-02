@@ -148,7 +148,9 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
         self.coordinator.send_write_command(self._data, cleaning_mode)
 
     async def async_return_to_base(self) -> None:
-        self.coordinator.send_write_command(self._data, Dock(status=DockStatus.RETURN))
+        self.coordinator.send_write_command(
+            self._data, Dock(status=DockStatus.RETURNING)
+        )
 
     @property
     def battery_level(self) -> int | None:
