@@ -1,5 +1,6 @@
 """Library for interacting with the WyBot API."""
 
+import hashlib
 import logging
 
 import requests
@@ -52,9 +53,12 @@ class WyBotHTTPClient:
     def login(self) -> LoginResponse:
         """Authenticate the user and retrieve a token."""
         _LOGGER.debug("Grabbing a token with a user and password")
+        md5_hash = hashlib.md5()
+        md5_hash.update(self._password.encode("utf-8"))
+        md5_hex = md5_hash.hexdigest()
         auth_data = {
             "username": self._username,
-            "password": self._password,
+            "password": md5_hex,
         }
         try:
             response = requests.post(

@@ -67,6 +67,8 @@ class WyBotMQTTClient:
         )
         self._subscriptions.append(f"/device/OTA/post_update_progress/{device_id}")
         self._subscriptions.append(f"/device/OTA/notify_ready_to_update/{device_id}")
+        for subscription in self._subscriptions:
+            self._mqtt.subscribe(subscription)
 
     def send_query_command_for_device(self, device_id: str, command: dict):
         """Send a command to a device."""
