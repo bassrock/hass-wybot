@@ -1,0 +1,15 @@
+{
+  "domain": "wybot",
+  "name": "WyBot",
+  "codeowners": ["@bassrock"],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://www.home-assistant.io/integrations/wybot",
+  "homekit": {},
+  "iot_class": "cloud_polling",
+  "requirements": ["pydantic"],
+  "ssdp": [],
+  "zeroconf": [],
+  "version": "0.0.1",
+  "loggers": ["custom_components.wybot"]
+}
