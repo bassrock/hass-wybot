@@ -5,7 +5,7 @@ import logging
 import requests
 
 from .const import TIMEOUT
-from .wybot_responses import DevicesResponse, Group, LoginResponse
+from .wybot_models import DevicesResponse, Group, LoginResponse
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ DEFAULT_HEADER = {
 }
 
 
-class WyBotClient:
+class WyBotHTTPClient:
     """Client for interacting with the WyBot API."""
 
     _token = None

@@ -7,6 +7,7 @@ import logging
 from homeassistant.components.vacuum import (
     STATE_CLEANING,
     STATE_DOCKED,
+    STATE_PAUSED,
     STATE_RETURNING,
     StateVacuumEntity,
     VacuumEntityFeature,
@@ -19,7 +20,16 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .wybot_coordinator import WyBotCoordinator
-from .wybot_responses import Group
+from .wybot_dp_models import (
+    Battery,
+    BatteryState,
+    CleaningMode,
+    CleaningStatus,
+    CleaningStatusMode,
+    Dock,
+    DockStatus,
+)
+from .wybot_models import Group
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -82,38 +92,68 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
     @property
     def state(self) -> str | None:
         """Return the state of thee device."""
-        if (
-            self._data.docker.device_status == "0"
-            and self._data.docker.docker_status == "0"
+        battery = self._data.get_dp(Battery)
+        cleaning_status = self._data.get_dp(CleaningStatus)
+        dock_status = self._data.get_dp(Dock)
+
+        if battery is None or cleaning_status is None or dock_status is None:
+            return None
+        if battery.charge_state in (BatteryState.CHARGING, BatteryState.CHARGED):
+            # Docked and charging
+            return STATE_DOCKED
+        if dock_status.status == DockStatus.RETURNING:
+            return STATE_RETURNING
+        if cleaning_status.status == CleaningStatusMode.STOPPED:
+            return STATE_PAUSED
+        if cleaning_status.status in (
+            CleaningStatusMode.CLEANING,
+            CleaningStatusMode.STARTING,
         ):
             return STATE_CLEANING
-        if (
-            # if we are 1, we are returning to dock
-            self._data.docker.docker_status == "1"
-        ):
-            return STATE_RETURNING
-        # if we are 2 or 3, we are docked
-        if self._data.docker.docker_status != "0":
-            return STATE_DOCKED
-        # 2 & 3 = docked and charged
 
     @property
-    def suppored_features(self) -> list[VacuumEntityFeature]:
+    def fan_speed_list(self) -> list[str]:
         """Flag vacuum cleaner robot features that are supported."""
-        return [
-            VacuumEntityFeature.SUPPORT_BATTERY,
-            # VacuumEntityFeature.SUPPORT_RETURN_HOME,
-        ]
+        return CleaningMode.CLEANING_MODES
+
+    @property
+    def fan_speed(self) -> str | None:
+        """Return the fan speed of the vacuum cleaner."""
+        fan_speed = self._data.get_dp(CleaningMode)
+        if fan_speed is not None:
+            return fan_speed.cleaning_mode
+        return None
+
+    @property
+    def supported_features(self) -> VacuumEntityFeature:
+        """Flag vacuum cleaner robot features that are supported."""
+        return (
+            VacuumEntityFeature.BATTERY
+            | VacuumEntityFeature.FAN_SPEED
+            | VacuumEntityFeature.RETURN_HOME
+            | VacuumEntityFeature.START
+            | VacuumEntityFeature.STOP
+        )
+
+    async def async_set_fan_speed(self, fan_speed: str) -> None:
+        cleaning_mode = CleaningMode(mode=fan_speed)
+        self.coordinator.send_write_command(self._data, cleaning_mode)
+
+    async def async_stop(self) -> None:
+        cleaning_mode = CleaningStatus(status=CleaningStatusMode.STOPPED)
+        self.coordinator.send_write_command(self._data, cleaning_mode)
+
+    async def async_start(self) -> None:
+        cleaning_mode = CleaningStatus(status=CleaningStatusMode.CLEANING)
+        self.coordinator.send_write_command(self._data, cleaning_mode)
+
+    async def async_return_to_base(self) -> None:
+        self.coordinator.send_write_command(self._data, Dock(status=DockStatus.RETURN))
 
     @property
     def battery_level(self) -> int | None:
-        # 2: docked and charged
-        if (
-            self._data.docker.docker_status == "2"
-            and self._data.docker.device_status == "2"
-        ):
-            return 100
-        # 3: docked and charging
-        # 1: returning to dock
-        # 0: not docked
-        return 50
+        battery = self._data.get_dp(Battery)
+        if battery is None:
+            return None
+        # get the last 2 characters of the data of battery_level and convert from hex to decimal
+        return battery.battery_level

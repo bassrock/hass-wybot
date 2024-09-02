@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.exceptions import HomeAssistantError
 from .const import DOMAIN
-from .wybot_client import WyBotClient
+from .wybot_http_client import WyBotHTTPClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
-    client = WyBotClient(data[CONF_USERNAME], data[CONF_PASSWORD])
+    client = WyBotHTTPClient(data[CONF_USERNAME], data[CONF_PASSWORD])
 
     authed = await hass.async_add_executor_job(client.authenticate)
 

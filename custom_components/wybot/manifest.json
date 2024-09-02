@@ -4,12 +4,12 @@
   "codeowners": ["@bassrock"],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://www.home-assistant.io/integrations/wybot",
+  "documentation": "https://github.com/bassrock/hass-wybot",
   "homekit": {},
-  "iot_class": "cloud_polling",
-  "requirements": ["pydantic"],
+  "iot_class": "cloud_push",
+  "requirements": ["pydantic", "paho-mqtt"],
   "ssdp": [],
   "zeroconf": [],
-  "version": "0.0.1",
+  "version": "1.0.0",
   "loggers": ["custom_components.wybot"]
 }
