@@ -36,7 +36,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
             name="WyBot Coordinator",
             # Polling interval. Will only be polled if there are subscribers and if no new mqtt data came in,
             # because of this we set polling to a high value
-            update_interval=timedelta(seconds=900),
+            update_interval=timedelta(seconds=120),
         )
         self.wybot_http_client = wybot_http_client
         self.wybot_mqtt_client = WyBotMQTTClient(self.on_message)
@@ -60,6 +60,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 if self.initial_load is False:
                     self.initial_load = True
                     await self.http_refresh_data()
+
+                if self.wybot_mqtt_client.is_connected() is False:
+                    self.wybot_mqtt_client.reconnect()
 
                 return self.data
         except any as err:
@@ -85,9 +88,6 @@ class WyBotCoordinator(DataUpdateCoordinator):
             _LOGGER.debug(
                 f"Received device online {deviceId} with {data['online'] == '1'}"
             )
-            if data["online"] == "1":
-                # Device is online, request the current state
-                self.ensure_device_sends_statuses(deviceId)
         if topic.startswith("/device/DATA/send_transparent_data/"):
             deviceId = topic[35:]
             command_response = Command(**data)
@@ -148,18 +148,6 @@ class WyBotCoordinator(DataUpdateCoordinator):
             self.wybot_mqtt_client.send_write_command_for_device(
                 group.docker.docker_id, command
             )
-
-    def ensure_device_sends_statuses(self, deviceId: str):
-        """Ensure that a device sends statuses."""
-        _LOGGER.debug(f"Ensuring device sends statuses {deviceId}")
-        self.wybot_mqtt_client.send_query_command_for_device(
-            deviceId,
-            {
-                "ts": time.time(),
-                "cmd": 9,
-                "dp": [{"id": 0}, {"id": 1}, {"id": 50}, {"id": 11}],
-            },
-        )
 
     @property
     def vacuums(self) -> list[str]:

@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 import paho.mqtt.client as mqtt
 
@@ -25,6 +26,8 @@ class WyBotMQTTClient:
     _subscriptions: list[str] = []
     _on_message: callable
 
+    _devices: list[str] = []
+
     def __init__(self, on_message) -> None:
         """Init the wybot mqtt api."""
         self._mqtt = mqtt.Client()
@@ -40,6 +43,15 @@ class WyBotMQTTClient:
         self._mqtt.loop_start()
         self._mqtt.connect(MQTT_URL)
 
+    def reconnect(self):
+        """Re-connect to the MQTT server."""
+        _LOGGER.debug(f"Reonnecting to wybot mqtt server {MQTT_URL}")
+        self._mqtt.reconnect()
+
+    def is_connected(self) -> bool:
+        """is_connected? to the MQTT server."""
+        self._mqtt.is_connected()
+
     def disconnect(self):
         """Stop the MQTT client."""
         _LOGGER.info("Stopping MQTT client.")
@@ -50,6 +62,8 @@ class WyBotMQTTClient:
         _LOGGER.debug(f"Connected with result code {reasonCode}")
         for subscription in self._subscriptions:
             client.subscribe(subscription)
+        for device in self._devices:
+            self.ensure_device_sends_statuses(device)
 
     def on_connect_fail(self, client, userdata):
         _LOGGER.debug(f"Connect failed")
@@ -67,12 +81,28 @@ class WyBotMQTTClient:
         )
         self._subscriptions.append(f"/device/OTA/post_update_progress/{device_id}")
         self._subscriptions.append(f"/device/OTA/notify_ready_to_update/{device_id}")
+        self._devices.append(device_id)
         for subscription in self._subscriptions:
             self._mqtt.subscribe(subscription)
+        self.ensure_device_sends_statuses(device_id)
+
+    def ensure_device_sends_statuses(self, deviceId: str):
+        """Ensure that a device sends statuses."""
+        _LOGGER.debug(f"Ensuring device sends statuses {deviceId}")
+        self.send_query_command_for_device(
+            deviceId,
+            {
+                "ts": time.time(),
+                "cmd": 9,
+                "dp": [{"id": 0}, {"id": 1}, {"id": 50}, {"id": 11}],
+            },
+        )
 
     def send_query_command_for_device(self, device_id: str, command: dict):
         """Send a command to a device."""
         _LOGGER.debug(f"SENDING QUERY - {device_id} - {command}")
+        if self.is_connected() == False:
+            self.reconnect()
         self._mqtt.publish(
             f"/device/DATA/recv_transparent_query_data/{device_id}", json.dumps(command)
         )
@@ -80,6 +110,8 @@ class WyBotMQTTClient:
     def send_write_command_for_device(self, device_id: str, command: dict):
         """Send a command to a device."""
         _LOGGER.debug(f"SENDING CMD - {device_id} - {command}")
+        if self.is_connected() == False:
+            self.reconnect()
         self._mqtt.publish(
             f"/device/DATA/recv_transparent_cmd_data/{device_id}", json.dumps(command)
         )
