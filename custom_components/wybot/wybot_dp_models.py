@@ -88,8 +88,9 @@ class CleaningStatus(GenericDP):
 
 
 class DockStatus(Enum):
-    RETURNING = 1
-    GENERAL = 3
+    DOCKED = 0  # Device is docked
+    RETURNING = 1  # Device is returning to dock
+    GENERAL = 3  # General/unknown status
 
 
 #  Send 01 to go back to dock

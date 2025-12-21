@@ -10,6 +10,6 @@
   "requirements": ["pydantic", "paho-mqtt"],
   "ssdp": [],
   "zeroconf": [],
-  "version": "1.2.0",
+  "version": "1.3.0",
   "loggers": ["custom_components.wybot"]
 }

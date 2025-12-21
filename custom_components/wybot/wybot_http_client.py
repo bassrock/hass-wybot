@@ -2,13 +2,21 @@
 
 import hashlib
 import logging
+import time
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 from .const import TIMEOUT
 from .wybot_models import DevicesResponse, Group, LoginResponse
 
 _LOGGER = logging.getLogger(__name__)
+
+# Retry configuration
+MAX_RETRIES = 3
+INITIAL_RETRY_DELAY = 1.0
+MAX_RETRY_DELAY = 10.0
 
 # Send the user/password to get the Token
 AUTH_URL = "https://api.wybotpool.com/api/user/login"
@@ -33,15 +41,30 @@ DEFAULT_HEADER = {
 class WyBotHTTPClient:
     """Client for interacting with the WyBot API."""
 
-    _token = None
-    _user_id = None
-    _password = None
-    _username = None
+    _token: str | None = None
+    _user_id: str | None = None
+    _password: str
+    _username: str
+    _session: requests.Session | None = None
 
-    def __init__(self, username, password) -> None:
+    def __init__(self, username: str, password: str) -> None:
         """Init the wybot api."""
         self._username = username
         self._password = password
+        self._setup_session()
+
+    def _setup_session(self) -> None:
+        """Set up HTTP session with retry strategy."""
+        self._session = requests.Session()
+        retry_strategy = Retry(
+            total=MAX_RETRIES,
+            backoff_factor=1,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["GET", "POST"],
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
     def authenticate(self) -> bool:
         """Test if we can authenticate with the host."""
@@ -58,8 +81,15 @@ class WyBotHTTPClient:
         )
         return self._token is not None
 
+    def _refresh_token_if_needed(self) -> bool:
+        """Refresh token if it's expired or missing."""
+        if self._token is None or self._user_id is None:
+            _LOGGER.debug("Token missing, re-authenticating")
+            return self.authenticate()
+        return True
+
     def login(self) -> LoginResponse | None:
-        """Authenticate the user and retrieve a token."""
+        """Authenticate the user and retrieve a token with retry logic."""
         _LOGGER.debug("Grabbing a token with a user and password")
         if not self._password:
             _LOGGER.error("Password is not set")
@@ -71,49 +101,125 @@ class WyBotHTTPClient:
             "username": self._username,
             "password": md5_hex,
         }
-        try:
-            response = requests.post(
-                AUTH_URL,
-                json=auth_data,
-                headers=DEFAULT_HEADER,
-                allow_redirects=False,
-                timeout=TIMEOUT,
-            )
-            response.close()
-            if response.status_code != 200:
-                _LOGGER.error("Error getting token: %s", response.text)
+
+        delay = INITIAL_RETRY_DELAY
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = self._session.post(
+                    AUTH_URL,
+                    json=auth_data,
+                    headers=DEFAULT_HEADER,
+                    allow_redirects=False,
+                    timeout=TIMEOUT,
+                )
+                if response.status_code == 200:
+                    json_response = response.json()
+                    response.close()
+                    return LoginResponse(**json_response)
+                else:
+                    _LOGGER.warning("Login attempt %d failed with status %d: %s",
+                                  attempt + 1, response.status_code, response.text)
+                    response.close()
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(delay)
+                        delay = min(delay * 2, MAX_RETRY_DELAY)
+                    else:
+                        _LOGGER.error("Error getting token after %d attempts: %s",
+                                    MAX_RETRIES, response.text)
+                        return None
+            except requests.exceptions.Timeout as err:
+                _LOGGER.warning("Login timeout on attempt %d: %s", attempt + 1, err)
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(delay)
+                    delay = min(delay * 2, MAX_RETRY_DELAY)
+                else:
+                    _LOGGER.error("Login timeout after %d attempts", MAX_RETRIES)
+                    return None
+            except requests.exceptions.RequestException as err:
+                _LOGGER.warning("Login request error on attempt %d: %s", attempt + 1, err)
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(delay)
+                    delay = min(delay * 2, MAX_RETRY_DELAY)
+                else:
+                    _LOGGER.error("Error getting token after %d attempts: %s",
+                                MAX_RETRIES, err)
+                    return None
+            except Exception as err:
+                _LOGGER.error("Unexpected error during login: %s", err)
                 return None
 
-            json_response = response.json()
-            return LoginResponse(**json_response)
-        except Exception as e:
-            _LOGGER.error("Error getting token: %s", e)
-            return None
+        return None
 
     def get_devices_and_status(self) -> DevicesResponse | None:
-        """Grab all devices and statuses."""
+        """Grab all devices and statuses with retry logic and token refresh."""
+        if not self._refresh_token_if_needed():
+            _LOGGER.error("Failed to refresh token")
+            return None
+
         if self._user_id is None:
             _LOGGER.error("User ID is not set")
             return None
+
         device_url = DEVICES_URL + str(self._user_id)
         _LOGGER.debug("Grabbing devices and statuses: %s", device_url)
-        try:
-            response = requests.get(
-                device_url,
-                headers={**DEFAULT_HEADER, "Authorization": f"token {self._token}"},
-                allow_redirects=False,
-                timeout=TIMEOUT,
-            )
-            response.close()
-            if response.status_code != 200:
-                _LOGGER.error("Error getting devices: %s", response.text)
+
+        delay = INITIAL_RETRY_DELAY
+        for attempt in range(MAX_RETRIES):
+            try:
+                response = self._session.get(
+                    device_url,
+                    headers={**DEFAULT_HEADER, "Authorization": f"token {self._token}"},
+                    allow_redirects=False,
+                    timeout=TIMEOUT,
+                )
+
+                if response.status_code == 200:
+                    json_response = response.json()
+                    response.close()
+                    return DevicesResponse(**json_response)
+                elif response.status_code == 401:
+                    # Token expired, try to refresh
+                    _LOGGER.info("Token expired, refreshing authentication")
+                    response.close()
+                    if self.authenticate():
+                        # Retry immediately after re-auth
+                        continue
+                    else:
+                        _LOGGER.error("Failed to refresh token after 401")
+                        return None
+                else:
+                    _LOGGER.warning("Get devices attempt %d failed with status %d: %s",
+                                  attempt + 1, response.status_code, response.text)
+                    response.close()
+                    if attempt < MAX_RETRIES - 1:
+                        time.sleep(delay)
+                        delay = min(delay * 2, MAX_RETRY_DELAY)
+                    else:
+                        _LOGGER.error("Error getting devices after %d attempts: %s",
+                                    MAX_RETRIES, response.text)
+                        return None
+            except requests.exceptions.Timeout as err:
+                _LOGGER.warning("Get devices timeout on attempt %d: %s", attempt + 1, err)
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(delay)
+                    delay = min(delay * 2, MAX_RETRY_DELAY)
+                else:
+                    _LOGGER.error("Get devices timeout after %d attempts", MAX_RETRIES)
+                    return None
+            except requests.exceptions.RequestException as err:
+                _LOGGER.warning("Get devices request error on attempt %d: %s", attempt + 1, err)
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(delay)
+                    delay = min(delay * 2, MAX_RETRY_DELAY)
+                else:
+                    _LOGGER.error("Error getting devices after %d attempts: %s",
+                                MAX_RETRIES, err)
+                    return None
+            except Exception as err:
+                _LOGGER.error("Unexpected error getting devices: %s", err)
                 return None
 
-            json_response = response.json()
-            return DevicesResponse(**json_response)
-        except Exception as e:
-            _LOGGER.error("Error getting token: %s", e)
-            return None
+        return None
 
     def get_indexed_current_grouped_devices(self) -> dict[str, Group]:
         """Return a dictionary of devices indexed by the grouped device_id."""
