@@ -1,15 +1,20 @@
 {
   "domain": "wybot",
   "name": "WyBot",
+  "bluetooth": [
+    {
+      "local_name": "DS20-*"
+    }
+  ],
   "codeowners": ["@bassrock"],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": ["bluetooth_adapters"],
   "documentation": "https://github.com/bassrock/hass-wybot",
   "homekit": {},
   "iot_class": "cloud_push",
-  "requirements": ["pydantic", "paho-mqtt"],
+  "requirements": ["pydantic", "paho-mqtt", "bleak"],
   "ssdp": [],
   "zeroconf": [],
-  "version": "1.3.0",
+  "version": "2.0.0",
   "loggers": ["custom_components.wybot"]
 }

@@ -1,8 +1,8 @@
-"""Platform for sensor integration."""
+"""Sensor platform for WyBot integration."""
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 import logging
 
 from homeassistant.components.sensor import (
@@ -11,24 +11,32 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import PERCENTAGE
+from homeassistant.const import EntityCategory, PERCENTAGE, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
-from homeassistant.helpers.entity import EntityCategory
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.icon import icon_for_battery_level
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, MANUFACTURER
 from .wybot_coordinator import WyBotCoordinator
-from .wybot_dp_models import Battery, BatteryState
+from .wybot_dp_models import (
+    Battery,
+    DockInfo,
+    SolarDockBattery,
+    SolarEnergyHarvested,
+)
 from .wybot_models import Group
 
 _LOGGER = logging.getLogger(__name__)
 
-# Force state write every 5 minutes to ensure history is recorded
-FORCE_STATE_WRITE_INTERVAL = timedelta(minutes=5)
+
+def format_mac(mac: str) -> str:
+    """Format a MAC address string with colons.
+
+    Converts "CCBA97932A96" to "CC:BA:97:93:2A:96".
+    """
+    mac = mac.upper().replace(":", "").replace("-", "")
+    return ":".join(mac[i : i + 2] for i in range(0, 12, 2))
 
 
 async def async_setup_entry(
@@ -36,143 +44,150 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the sensor platform."""
+    """Set up the WyBot sensor platform."""
     coordinator: WyBotCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        WyBotBatterySensor(idx=deviceId, coordinator=coordinator)
-        for deviceId in coordinator.vacuums
-    )
+
+    entities: list[SensorEntity] = []
+
+    for device_id in coordinator.vacuums:
+        # Add sensors for each device
+        entities.extend(
+            [
+                WyBotRobotBatterySensor(idx=device_id, coordinator=coordinator),
+                WyBotSolarDockBatterySensor(idx=device_id, coordinator=coordinator),
+                WyBotSolarEnergySensor(idx=device_id, coordinator=coordinator),
+                WyBotDockTypeSensor(idx=device_id, coordinator=coordinator),
+                # Diagnostic sensors for communication tracking
+                WyBotLastBLECommunicationSensor(idx=device_id, coordinator=coordinator),
+                WyBotLastMQTTCommunicationSensor(idx=device_id, coordinator=coordinator),
+                WyBotDataSourceSensor(idx=device_id, coordinator=coordinator),
+            ]
+        )
+
+    async_add_entities(entities)
 
 
-class WyBotBatterySensor(CoordinatorEntity, SensorEntity):
-    """A WyBot battery sensor."""
+class WyBotSensorBase(SensorEntity, CoordinatorEntity):
+    """Base class for WyBot sensors."""
 
-    _attr_device_class = SensorDeviceClass.BATTERY
-    _attr_native_unit_of_measurement = PERCENTAGE
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_entity_category = EntityCategory.DIAGNOSTIC
-    _attr_has_entity_name = True
-
-    _data: Group
+    _data: Group | None
     _idx: str
     _coordinator: WyBotCoordinator
-    _last_state_write: datetime | None = None
-    _last_charging_state: BatteryState | None = None
-    _last_availability: bool | None = None
+    _attr_has_entity_name = True
 
     def __init__(self, idx: str, coordinator: WyBotCoordinator) -> None:
-        """Initialize the WyBot battery sensor."""
+        """Initialize the WyBot sensor."""
         super().__init__(coordinator=coordinator, context=idx)
         self._idx = idx
         self._coordinator = coordinator
-        # Initialize data safely
         self._data = coordinator.data.get(self._idx) if coordinator.data else None
-        self._attr_unique_id = f"wybot_battery_{self._idx}"
-        self._attr_translation_key = "battery"
-        self._last_state_write = None
-        self._last_charging_state = None
-        self._last_availability = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Handle updated data from the coordinator."""
         if str(self._idx) in self.coordinator.data:
             self._data = self.coordinator.data[str(self._idx)]
-
-        # Track availability changes
-        current_availability = self.available
-        previous_availability = self._last_availability
-        availability_changed = (
-            previous_availability is not None
-            and previous_availability != current_availability
-        )
-        self._last_availability = current_availability
-
-        # Track charging state changes
-        current_charging_state = None
-        if self._data:
-            battery = self._data.get_dp(Battery)
-            if battery is not None:
-                current_charging_state = battery.charge_state
-        previous_charging_state = self._last_charging_state
-        charging_state_changed = (
-            previous_charging_state is not None
-            and previous_charging_state != current_charging_state
-        )
-        self._last_charging_state = current_charging_state
-
-        # Always write state if:
-        # 1. Availability changed (to record unavailable/available transitions)
-        # 2. Charging state changed (to update icon and attributes)
-        # 3. It's been more than FORCE_STATE_WRITE_INTERVAL since last write (to ensure history)
-        # 4. Normal coordinator update (base class handles this)
-        now = dt_util.utcnow()
-        should_force_write = (
-            availability_changed
-            or charging_state_changed
-            or self._last_state_write is None
-            or (now - self._last_state_write) >= FORCE_STATE_WRITE_INTERVAL
-        )
-
-        # Call base class update handler
         super()._handle_coordinator_update()
-
-        # Force state write if needed to ensure icon and attributes update
-        if should_force_write:
-            self.async_write_ha_state()
-            self._last_state_write = now
-            if availability_changed:
-                _LOGGER.debug(
-                    "Availability changed for %s: %s -> %s, forcing state write",
-                    self.entity_id,
-                    previous_availability,
-                    current_availability,
-                )
-            if charging_state_changed:
-                _LOGGER.debug(
-                    "Charging state changed for %s: %s -> %s, forcing state write",
-                    self.entity_id,
-                    previous_charging_state,
-                    current_charging_state,
-                )
 
     @property
     def available(self) -> bool:
         """Return if entity is available."""
         if not self.coordinator.available:
             return False
-        # Check coordinator data directly if local data not set
-        if not self._data and str(self._idx) in self.coordinator.data:
-            self._data = self.coordinator.data[str(self._idx)]
         if not self._data:
             return False
         if str(self._idx) not in self.coordinator.data:
             return False
         return True
 
+    def _get_robot_name(self) -> str:
+        """Get the robot device name."""
+        if self._data:
+            if self._data.name:
+                return self._data.name
+            elif self._data.device and self._data.device.device_name:
+                return self._data.device.device_name
+            elif self._data.device and self._data.device.device_type:
+                return self._data.device.device_type
+        return "Unknown"
+
+    def _get_robot_model(self) -> str:
+        """Get the robot device model."""
+        if self._data and self._data.device:
+            return self._data.device.device_type
+        return "Unknown"
+
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        name = self._data.name if self._data else "Unknown"
-        model = (
-            self._data.device.device_type
-            if self._data and self._data.device
-            else "Unknown"
-        )
+        """Return device information for the robot."""
+        connections: set[tuple[str, str]] = set()
+        if self._data and self._data.device and self._data.device.ble_name:
+            connections.add(
+                (CONNECTION_BLUETOOTH, format_mac(self._data.device.ble_name))
+            )
+        # If dock exists, robot connects via dock; otherwise standalone
+        via_device = None
+        if self._data and self._data.docker:
+            via_device = (DOMAIN, f"{self._idx}_dock")
         return DeviceInfo(
             identifiers={(DOMAIN, str(self._idx))},
-            name=name,
+            name=self._get_robot_name(),
             manufacturer=MANUFACTURER,
-            model=model,
+            model=self._get_robot_model(),
+            connections=connections if connections else None,
+            via_device=via_device,
         )
+
+
+class WyBotDockSensorBase(WyBotSensorBase):
+    """Base class for WyBot dock sensors - creates a separate dock device."""
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information for the solar dock."""
+        dock_name = "Solar Dock"
+        dock_model = "Unknown"
+        connections: set[tuple[str, str]] = set()
+        if self._data and self._data.docker:
+            dock_model = self._data.docker.docker_type
+            # Use docker type as name if available
+            if self._data.docker.docker_type:
+                dock_name = f"{self._data.docker.docker_type} Solar Dock"
+            # Add Bluetooth MAC connection if available
+            if self._data.docker.ble_name:
+                connections.add(
+                    (CONNECTION_BLUETOOTH, format_mac(self._data.docker.ble_name))
+                )
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._idx}_dock")},
+            name=dock_name,
+            manufacturer=MANUFACTURER,
+            model=dock_model,
+            connections=connections if connections else None,
+        )
+
+
+class WyBotRobotBatterySensor(WyBotSensorBase):
+    """Sensor for robot battery level."""
+
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_translation_key = "robot_battery"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_robot_battery"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Robot battery"
 
     @property
     def native_value(self) -> int | None:
-        """Return the battery level of the vacuum cleaner."""
-        # Get data from coordinator if not set locally
-        if not self._data and str(self._idx) in self.coordinator.data:
-            self._data = self.coordinator.data[str(self._idx)]
-
+        """Return the robot battery level as percentage."""
         if not self._data:
             return None
         battery = self._data.get_dp(Battery)
@@ -180,24 +195,249 @@ class WyBotBatterySensor(CoordinatorEntity, SensorEntity):
             return None
         return battery.battery_level
 
+
+class WyBotSolarDockBatterySensor(WyBotDockSensorBase):
+    """Sensor for solar dock battery level."""
+
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_translation_key = "dock_battery"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_dock_battery"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Battery"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the solar dock battery level as percentage."""
+        if not self._data:
+            return None
+        dock_battery = self._data.get_dp(SolarDockBattery)
+        if dock_battery is None:
+            return None
+        return dock_battery.battery_level
+
+
+class WyBotSolarEnergySensor(WyBotDockSensorBase):
+    """Sensor for total solar energy harvested."""
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
+    _attr_translation_key = "solar_energy"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_solar_energy"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Energy harvested"
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the total solar energy harvested in Wh."""
+        if not self._data:
+            return None
+        solar_energy = self._data.get_dp(SolarEnergyHarvested)
+        if solar_energy is None:
+            return None
+        return solar_energy.energy_wh
+
+
+class WyBotDockTypeSensor(WyBotDockSensorBase):
+    """Sensor for dock type information."""
+
+    _attr_device_class = None
+    _attr_entity_registry_enabled_default = False  # Disabled by default (diagnostic)
+    _attr_translation_key = "dock_type"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_dock_type"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Type"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the dock type."""
+        if not self._data:
+            return None
+        dock_info = self._data.get_dp(DockInfo)
+        if dock_info is None:
+            return None
+        if dock_info.is_solar_dock:
+            return "Solar"
+        return dock_info.dock_type.name.title()
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return additional state attributes."""
+        attrs = {}
+        if self._data:
+            dock_info = self._data.get_dp(DockInfo)
+            if dock_info is not None:
+                attrs["raw_value"] = dock_info.data
+                attrs["is_solar_dock"] = dock_info.is_solar_dock
+        return attrs
+
+
+class WyBotLastBLECommunicationSensor(WyBotDockSensorBase):
+    """Diagnostic sensor for last BLE communication time."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = True
+    _attr_translation_key = "last_ble_communication"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_last_ble_communication"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Last BLE communication"
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the last BLE communication time."""
+        # Get the dock device ID for BLE tracking (dock relays to robot)
+        if self._data and self._data.docker:
+            device_id = self._data.docker.docker_id
+        elif self._data and self._data.device:
+            device_id = self._data.device.device_id
+        else:
+            return None
+        return self._coordinator.get_last_ble_communication(device_id)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return additional state attributes."""
+        attrs = {}
+        if self._data and self._data.docker:
+            device_id = self._data.docker.docker_id
+            attrs["ble_available"] = self._coordinator.is_ble_available(device_id)
+            if self._data.docker.ble_name:
+                attrs["ble_name"] = self._data.docker.ble_name
+        return attrs
+
+
+class WyBotLastMQTTCommunicationSensor(WyBotDockSensorBase):
+    """Diagnostic sensor for last MQTT communication time."""
+
+    _attr_device_class = SensorDeviceClass.TIMESTAMP
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = True
+    _attr_translation_key = "last_mqtt_communication"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_last_mqtt_communication"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Last MQTT communication"
+
+    @property
+    def native_value(self) -> datetime | None:
+        """Return the last MQTT communication time."""
+        # Get the dock device ID for MQTT tracking
+        if self._data and self._data.docker:
+            device_id = self._data.docker.docker_id
+        elif self._data and self._data.device:
+            device_id = self._data.device.device_id
+        else:
+            return None
+        return self._coordinator.get_last_mqtt_communication(device_id)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return additional state attributes."""
+        attrs = {}
+        if self._data and self._data.docker:
+            attrs["mqtt_connected"] = self._coordinator._mqtt_connected
+        return attrs
+
+
+class WyBotDataSourceSensor(WyBotDockSensorBase):
+    """Diagnostic sensor showing current data source (BLE or MQTT)."""
+
+    _attr_device_class = None
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_entity_registry_enabled_default = True
+    _attr_translation_key = "data_source"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_data_source"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Data source"
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the current data source."""
+        if self._data and self._data.docker:
+            device_id = self._data.docker.docker_id
+        elif self._data and self._data.device:
+            device_id = self._data.device.device_id
+        else:
+            return None
+        source = self._coordinator.get_data_source(device_id)
+        if source == "ble":
+            return "Bluetooth"
+        elif source == "mqtt":
+            return "Cloud (MQTT)"
+        return "Unknown"
+
     @property
     def icon(self) -> str:
-        """Return the icon for the battery sensor."""
-        battery = self._data.get_dp(Battery) if self._data else None
-        if battery is None:
-            return "mdi:battery-unknown"
-        battery_level = battery.battery_level
-        is_charging = battery.charge_state in (BatteryState.CHARGING, BatteryState.CHARGED)
-        return icon_for_battery_level(battery_level=battery_level, charging=is_charging)
+        """Return the icon based on data source."""
+        if self._data and self._data.docker:
+            device_id = self._data.docker.docker_id
+        elif self._data and self._data.device:
+            device_id = self._data.device.device_id
+        else:
+            return "mdi:help-circle"
+        source = self._coordinator.get_data_source(device_id)
+        if source == "ble":
+            return "mdi:bluetooth"
+        elif source == "mqtt":
+            return "mdi:cloud"
+        return "mdi:help-circle"
 
     @property
-    def extra_state_attributes(self) -> dict[str, str]:
-        """Return extra state attributes."""
-        battery = self._data.get_dp(Battery) if self._data else None
-        if battery is None:
-            return {}
-        return {
-            "charging": battery.charge_state in (BatteryState.CHARGING, BatteryState.CHARGED),
-            "charge_state": battery.charge_state.name,
-        }
-
+    def extra_state_attributes(self) -> dict:
+        """Return additional state attributes."""
+        attrs = {}
+        if self._data and self._data.docker:
+            device_id = self._data.docker.docker_id
+            attrs["ble_available"] = self._coordinator.is_ble_available(device_id)
+            attrs["mqtt_connected"] = self._coordinator._mqtt_connected
+            last_ble = self._coordinator.get_last_ble_communication(device_id)
+            last_mqtt = self._coordinator.get_last_mqtt_communication(device_id)
+            if last_ble:
+                attrs["last_ble"] = last_ble.isoformat()
+            if last_mqtt:
+                attrs["last_mqtt"] = last_mqtt.isoformat()
+        return attrs
