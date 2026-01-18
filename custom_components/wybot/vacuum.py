@@ -12,7 +12,7 @@ from homeassistant.components.vacuum import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
@@ -26,6 +26,7 @@ from .wybot_dp_models import (
     CleaningStatus,
     CleaningStatusMode,
     Dock,
+    DockConnectionStatus,
     DockStatus,
 )
 from .wybot_models import Group
@@ -34,6 +35,15 @@ _LOGGER = logging.getLogger(__name__)
 
 # Force state write every 5 minutes to ensure history is recorded
 FORCE_STATE_WRITE_INTERVAL = timedelta(minutes=5)
+
+
+def format_mac(mac: str) -> str:
+    """Format a MAC address string with colons.
+
+    Converts "CCBA97932A96" to "CC:BA:97:93:2A:96".
+    """
+    mac = mac.upper().replace(":", "").replace("-", "")
+    return ":".join(mac[i : i + 2] for i in range(0, 12, 2))
 
 
 async def async_setup_entry(
@@ -59,8 +69,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
     _last_state_write: datetime | None = None
     _last_availability: bool | None = None
     _last_charging_state: BatteryState | None = None
-    _pending_command: VacuumActivity | None = None
-    _command_sent_time: datetime | None = None
 
     def __init__(self, idx: str, coordinator: WyBotCoordinator) -> None:
         """Initialize the WyBot vacuum entity."""
@@ -72,8 +80,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
         self._last_state_write = None
         self._last_availability = None
         self._last_charging_state = None
-        self._pending_command = None
-        self._command_sent_time = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -102,60 +108,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
             and previous_charging_state != current_charging_state
         )
         self._last_charging_state = current_charging_state
-
-        # Clear pending command if we got a confirmed status that matches our expectation
-        if self._data and self._pending_command is not None:
-            cleaning_status = self._data.get_dp(CleaningStatus)
-            dock_status = self._data.get_dp(Dock)
-
-            # Check if we got a status that confirms our pending command
-            should_clear = False
-            if (
-                cleaning_status is not None
-                and cleaning_status.status != CleaningStatusMode.UNKNOWN
-            ):
-                # For CLEANING command, clear when we get CLEANING or STARTING status
-                if self._pending_command == VacuumActivity.CLEANING:
-                    if cleaning_status.status in (
-                        CleaningStatusMode.CLEANING,
-                        CleaningStatusMode.STARTING,
-                    ):
-                        should_clear = True
-                # For PAUSED command, clear when we get STOPPED status
-                elif self._pending_command == VacuumActivity.PAUSED:
-                    if cleaning_status.status == CleaningStatusMode.STOPPED:
-                        should_clear = True
-
-            # For RETURNING command, check dock status
-            if (
-                self._pending_command == VacuumActivity.RETURNING
-                and dock_status is not None
-            ):
-                # Clear if dock status shows RETURNING, or if we're now docked (charging)
-                battery = self._data.get_dp(Battery)
-                if dock_status.status == DockStatus.RETURNING or (
-                    battery is not None
-                    and battery.charge_state
-                    in (BatteryState.CHARGING, BatteryState.CHARGED)
-                ):
-                    should_clear = True
-
-            if should_clear:
-                _LOGGER.debug(
-                    "Clearing pending command %s for %s, got confirming status",
-                    self._pending_command,
-                    self.entity_id,
-                )
-                self._pending_command = None
-                self._command_sent_time = None
-            # Also clear if command is too old (more than 30 seconds)
-            elif (
-                self._command_sent_time is not None
-                and (dt_util.utcnow() - self._command_sent_time).total_seconds() > 30
-            ):
-                _LOGGER.debug("Clearing stale pending command for %s", self.entity_id)
-                self._pending_command = None
-                self._command_sent_time = None
 
         # Always write state if:
         # 1. Availability changed (to record unavailable/available transitions)
@@ -197,29 +149,47 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
         """Return if entity is available."""
         if not self.coordinator.available:
             return False
-        # Check coordinator data directly if local data not set
-        if not self._data and str(self._idx) in self.coordinator.data:
-            self._data = self.coordinator.data[str(self._idx)]
         if not self._data:
             return False
         if str(self._idx) not in self.coordinator.data:
             return False
+        # Check if device is online (received online: "1" from /will/ topic)
+        # Note: Device may show data even when offline if we have cached data
+        # We'll show available if we have data, but the device might be asleep
         return True
 
     @property
     def device_info(self) -> DeviceInfo:
         """Return device information."""
-        name = self._data.name if self._data else "Unknown"
-        model = (
-            self._data.device.device_type
-            if self._data and self._data.device
-            else "Unknown"
-        )
+        # Use group name, fall back to device name, then device type
+        name = "Unknown"
+        model = "Unknown"
+        connections: set[tuple[str, str]] = set()
+        via_device = None
+        if self._data:
+            if self._data.name:
+                name = self._data.name
+            elif self._data.device and self._data.device.device_name:
+                name = self._data.device.device_name
+            elif self._data.device and self._data.device.device_type:
+                name = self._data.device.device_type
+            if self._data.device:
+                model = self._data.device.device_type
+                # Add Bluetooth MAC connection if available
+                if self._data.device.ble_name:
+                    connections.add(
+                        (CONNECTION_BLUETOOTH, format_mac(self._data.device.ble_name))
+                    )
+            # If dock exists, robot connects via dock
+            if self._data.docker:
+                via_device = (DOMAIN, f"{self._idx}_dock")
         return DeviceInfo(
             identifiers={(DOMAIN, str(self._idx))},
             name=name,
             manufacturer=MANUFACTURER,
             model=model,
+            connections=connections if connections else None,
+            via_device=via_device,
         )
 
     @property
@@ -237,100 +207,45 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
     @property
     def activity(self) -> VacuumActivity | None:
         """Return the state of the device."""
-        # Get data from coordinator if not set locally
-        if not self._data and str(self._idx) in self.coordinator.data:
-            self._data = self.coordinator.data[str(self._idx)]
-
         if not self._data:
             return None
         battery = self._data.get_dp(Battery)
         cleaning_status = self._data.get_dp(CleaningStatus)
         dock_status = self._data.get_dp(Dock)
+        dock_connection = self._data.get_dp(DockConnectionStatus)
 
-        # Require at least Battery and CleaningStatus to determine state
-        # Dock is optional (only needed for RETURNING detection)
-        if battery is None or cleaning_status is None:
-            return None
-
-        # If we have a pending command (optimistic state), prioritize it
-        # Use it if status is UNKNOWN, or if status doesn't match what we expect
-        if self._pending_command is not None:
-            # Always use pending command if status is UNKNOWN
-            if cleaning_status.status == CleaningStatusMode.UNKNOWN:
-                _LOGGER.debug(
-                    "Using pending command state %s for %s (status is UNKNOWN)",
-                    self._pending_command,
-                    self.entity_id,
-                )
-                return self._pending_command
-
-            # For RETURNING command, use it even if cleaning status is STOPPED
-            # (device might be stopped while returning to dock)
-            if self._pending_command == VacuumActivity.RETURNING:
-                _LOGGER.debug(
-                    "Using pending RETURNING state for %s (command in progress)",
-                    self.entity_id,
-                )
-                return self._pending_command
-
-            # For CLEANING command, only use if status is not CLEANING yet
-            if (
-                self._pending_command == VacuumActivity.CLEANING
-                and cleaning_status.status
-                not in (
-                    CleaningStatusMode.CLEANING,
-                    CleaningStatusMode.STARTING,
-                )
-            ):
-                _LOGGER.debug(
-                    "Using pending CLEANING state for %s (status: %s)",
-                    self.entity_id,
-                    cleaning_status.status,
-                )
-                return self._pending_command
-
-        # If device status is UNKNOWN, try to get status from docker as fallback
-        if (
-            cleaning_status.status == CleaningStatusMode.UNKNOWN
-            and self._data.docker is not None
+        # Check if returning to dock via CleaningStatus (DP 0) - primary indicator
+        if cleaning_status is not None and cleaning_status.status in (
+            CleaningStatusMode.RETURNING_TO_DOCK,
+            CleaningStatusMode.RETURNING,
         ):
-            docker_cleaning_status = self._data.docker.get_dp(CleaningStatus)
-            if (
-                docker_cleaning_status is not None
-                and docker_cleaning_status.status != CleaningStatusMode.UNKNOWN
-            ):
-                _LOGGER.debug(
-                    "Using docker cleaning status %s for %s (device status is UNKNOWN)",
-                    docker_cleaning_status.status,
-                    self.entity_id,
-                )
-                cleaning_status = docker_cleaning_status
+            return VacuumActivity.RETURNING
 
-        # Prioritize cleaning status over charging status
-        # If device is cleaning, show CLEANING even if charging
-        if cleaning_status.status in (
-            CleaningStatusMode.CLEANING,
-            CleaningStatusMode.STARTING,
-        ):
-            return VacuumActivity.CLEANING
-
-        # Check if returning to dock (only if dock status is available)
+        # Check if returning via Dock DP (fallback for legacy behavior)
         if dock_status is not None and dock_status.status == DockStatus.RETURNING:
             return VacuumActivity.RETURNING
 
-        # Check if charging/charged - device is docked
-        # This must come BEFORE the STOPPED check, because when docked the device
-        # reports STOPPED status but should show as DOCKED if charging
-        if battery.charge_state in (BatteryState.CHARGING, BatteryState.CHARGED):
+        # Check if docked - use dock status, dock connection status, or battery charging state
+        is_docked = False
+        if dock_status is not None and dock_status.status == DockStatus.DOCKED:
+            is_docked = True
+        elif dock_connection is not None:
+            is_docked = dock_connection.is_docked
+        elif battery is not None:
+            is_docked = battery.charge_state in (BatteryState.CHARGING, BatteryState.CHARGED)
+
+        if is_docked:
             return VacuumActivity.DOCKED
 
-        # Check if stopped/paused (only if not charging - handled above)
-        if cleaning_status.status == CleaningStatusMode.STOPPED:
-            return VacuumActivity.PAUSED
-
-        # Handle UNKNOWN status - assume idle/paused (charging already handled above)
-        if cleaning_status.status == CleaningStatusMode.UNKNOWN:
-            return VacuumActivity.PAUSED
+        # Check cleaning status
+        if cleaning_status is not None:
+            if cleaning_status.status in (
+                CleaningStatusMode.CLEANING,
+                CleaningStatusMode.STARTING,
+            ):
+                return VacuumActivity.CLEANING
+            if cleaning_status.status == CleaningStatusMode.STOPPED:
+                return VacuumActivity.PAUSED
 
         return None
 
@@ -342,10 +257,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
     @property
     def fan_speed(self) -> str | None:
         """Return the fan speed of the vacuum cleaner."""
-        # Get data from coordinator if not set locally
-        if not self._data and str(self._idx) in self.coordinator.data:
-            self._data = self.coordinator.data[str(self._idx)]
-
         if not self._data:
             return None
         fan_speed = self._data.get_dp(CleaningMode)
@@ -368,38 +279,26 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
         if not self._data:
             return
         cleaning_mode = CleaningMode(mode=fan_speed)
-        self.coordinator.send_write_command(self._data, cleaning_mode)
+        await self.coordinator.async_send_command(self._data, cleaning_mode)
 
     async def async_stop(self) -> None:
         """Stop the vacuum cleaner."""
         if not self._data:
             return
-        cleaning_mode = CleaningStatus(status=CleaningStatusMode.STOPPED)
-        self.coordinator.send_write_command(self._data, cleaning_mode)
-        # Set optimistic state - show as paused until we get confirmation
-        self._pending_command = VacuumActivity.PAUSED
-        self._command_sent_time = dt_util.utcnow()
-        self.async_write_ha_state()
+        cleaning_status = CleaningStatus(status=CleaningStatusMode.STOPPED)
+        await self.coordinator.async_send_command(self._data, cleaning_status)
 
     async def async_start(self) -> None:
         """Start the vacuum cleaner."""
         if not self._data:
             return
-        cleaning_mode = CleaningStatus(status=CleaningStatusMode.CLEANING)
-        self.coordinator.send_write_command(self._data, cleaning_mode)
-        # Set optimistic state - show as cleaning until we get confirmation
-        self._pending_command = VacuumActivity.CLEANING
-        self._command_sent_time = dt_util.utcnow()
-        self.async_write_ha_state()
+        cleaning_status = CleaningStatus(status=CleaningStatusMode.CLEANING)
+        await self.coordinator.async_send_command(self._data, cleaning_status)
 
     async def async_return_to_base(self) -> None:
         """Return the vacuum cleaner to the dock."""
         if not self._data:
             return
-        self.coordinator.send_write_command(
+        await self.coordinator.async_send_command(
             self._data, Dock(status=DockStatus.RETURNING)
         )
-        # Set optimistic state - show as returning until we get confirmation
-        self._pending_command = VacuumActivity.RETURNING
-        self._command_sent_time = dt_util.utcnow()
-        self.async_write_ha_state()

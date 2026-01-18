@@ -134,6 +134,7 @@ class Docker(pydantic_v1.BaseModel):
     device_status: str = pydantic_v1.Field(alias="deviceStatus")
     docker_status: str = pydantic_v1.Field(alias="dockerStatus")
     schedule: str | None = pydantic_v1.Field(alias="schedule")
+    version: Version | None = None
 
     "Extra added fields"
     online: bool = False

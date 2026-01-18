@@ -5,6 +5,7 @@ from collections.abc import Callable
 import json
 import logging
 import time
+import uuid
 
 import paho.mqtt.client as mqtt
 
@@ -46,7 +47,11 @@ class WyBotMQTTClient:
 
     def __init__(self, on_message: Callable) -> None:
         """Init the wybot mqtt api."""
-        self._mqtt = mqtt.Client()
+        # Generate a UUID-based client ID like mobile apps use
+        # Format: wybot-{uuid} to mimic app behavior
+        client_id = f"wybot-{uuid.uuid4()}"
+        _LOGGER.debug("MQTT client ID: %s", client_id)
+        self._mqtt = mqtt.Client(client_id=client_id, clean_session=True)
         self._mqtt.username_pw_set(USERNAME, PASWORD)
         self._mqtt.on_connect = self.on_connect
         self._mqtt.on_message = self.on_message
@@ -176,9 +181,9 @@ class WyBotMQTTClient:
             # Re-subscribe to all topics
             for subscription in self._subscriptions:
                 client.subscribe(subscription)
-            # Note: Don't query devices here - wait for will messages to arrive
-            # The coordinator will trigger queries when devices come online
-            # This matches iOS app behavior
+            # Request status updates for all devices
+            for device in self._devices:
+                self.ensure_device_sends_statuses(device)
             # Signal connection event
             if self._connection_event:
                 self._connection_event.set()
@@ -206,126 +211,43 @@ class WyBotMQTTClient:
         if rc != 0:
             _LOGGER.info("Unexpected disconnection, will attempt to reconnect")
 
-    def subscribe_for_device_initial(self, device_id):
-        """Subscribe to initial topics for a device (will and OTA notifications).
-
-        This matches the iOS app pattern: subscribe to will/OTA topics first,
-        before sending any queries.
-        """
-        _LOGGER.debug(f"Subscribing to initial topics for device {device_id}")
-        initial_topics = [
-            f"/will/{device_id}",
-            f"/device/OTA/notify_ready_to_update/{device_id}",
-        ]
-        for topic in initial_topics:
-            if topic not in self._subscriptions:
-                self._subscriptions.append(topic)
-            self._mqtt.subscribe(topic)
-        if device_id not in self._devices:
-            self._devices.append(device_id)
-
     def subscribe_for_device(self, device_id):
-        """Subscribe to response topics for a device.
-
-        This is called after the initial query is sent, matching iOS app pattern.
-        """
-        _LOGGER.debug(f"Subscribing to response topics for device {device_id}")
-        response_topics = [
-            f"/device/DATA/send_transparent_data/{device_id}",
-            f"/device/OTA/post_update_progress/{device_id}",
-            f"/device/DATA/recv_transparent_query_data/{device_id}",
-            f"/device/DATA/recv_transparent_cmd_data/{device_id}",
-        ]
-        for topic in response_topics:
-            if topic not in self._subscriptions:
-                self._subscriptions.append(topic)
-            self._mqtt.subscribe(topic)
+        """Subscribe to a device."""
+        _LOGGER.debug(f"Subscribing to wybot mqtt for device {device_id}")
+        self._subscriptions.append(f"/will/{device_id}")
+        self._subscriptions.append(f"/device/DATA/send_transparent_data/{device_id}")
+        self._subscriptions.append(
+            f"/device/DATA/recv_transparent_query_data/{device_id}"
+        )
+        self._subscriptions.append(
+            f"/device/DATA/recv_transparent_cmd_data/{device_id}"
+        )
+        self._subscriptions.append(f"/device/OTA/post_update_progress/{device_id}")
+        self._subscriptions.append(f"/device/OTA/notify_ready_to_update/{device_id}")
+        self._devices.append(device_id)
+        for subscription in self._subscriptions:
+            self._mqtt.subscribe(subscription)
+        self.ensure_device_sends_statuses(device_id)
 
     def ensure_device_sends_statuses(self, deviceId: str):
-        """Ensure that a device sends statuses (sync version).
-
-        Sends all queries immediately. For async version with delays, use
-        ensure_device_sends_statuses_async.
-        """
+        """Ensure that a device sends statuses."""
         _LOGGER.debug(f"Ensuring device sends statuses {deviceId}")
+
         # Query DPs individually in the exact order the iOS app uses
         # iOS app queries: 1, 79, 1, 0, 77 (DP 1 is queried twice)
-        # We also include 50 and 11 for our own needs
-        query_dps = [1, 79, 1, 0, 77, 50, 11]
+        # We also include: 50 (battery), 11 (dock), and solar dock DPs
+        # Solar dock DPs: 131 (energy), 221 (dock battery), 222 (solar status), 214 (dock type)
+        # S2 Pro additional DPs: 209, 212, 213
+        query_dps = [0, 1, 79, 1, 0, 77, 50, 11, 131, 209, 212, 213, 214, 221, 222]
         for dp_id in query_dps:
             self.send_query_command_for_device(
                 deviceId,
                 {
-                    "ts": time.time(),
+                    "ts": int(time.time()),
                     "cmd": 9,
                     "dp": [{"id": dp_id}],
                 },
             )
-
-    def send_initial_query(self, deviceId: str):
-        """Send the initial query (DP 1 only) matching iOS app pattern.
-
-        The iOS app sends only DP 1 query first, before subscribing to
-        response topics.
-        """
-        _LOGGER.debug(f"Sending initial query (DP 1) for device {deviceId}")
-        self.send_query_command_for_device(
-            deviceId,
-            {
-                "ts": time.time(),
-                "cmd": 9,
-                "dp": [{"id": 1}],
-            },
-        )
-
-    async def ensure_device_sends_statuses_async(self, deviceId: str):
-        """Ensure that a device sends statuses (async version with delays).
-
-        Sends remaining queries one at a time with delays, matching iOS app behavior.
-        iOS app sends queries with 20-120ms delays between them.
-        This sends queries for DPs: 79, 1, 0, 77, 50, 11 (excluding the initial DP 1).
-        """
-        _LOGGER.debug(f"Ensuring device sends statuses {deviceId} (async with delays)")
-        # Query DPs individually in the exact order the iOS app uses
-        # iOS app queries: 79, 1, 0, 77 (after initial DP 1 query)
-        # We also include 50 and 11 for our own needs
-        # iOS app sends queries with 20-120ms delays between them
-        query_dps = [79, 1, 0, 77, 50, 11]
-        for dp_id in query_dps:
-            self.send_query_command_for_device(
-                deviceId,
-                {
-                    "ts": time.time(),
-                    "cmd": 9,
-                    "dp": [{"id": dp_id}],
-                },
-            )
-            # Add delay between queries to match iOS app behavior (20-120ms)
-            # Use 50ms as a middle ground
-            await asyncio.sleep(0.05)  # 50ms delay
-
-    async def query_device_ios_pattern(self, deviceId: str):
-        """Query device using iOS app pattern.
-
-        Since response topics are already subscribed upfront, this just sends queries:
-        1. Send initial query (DP 1)
-        2. Wait briefly
-        3. Send remaining queries with delays
-        """
-        _LOGGER.debug(f"Querying device {deviceId} using iOS app pattern")
-        if not self.is_connected():
-            _LOGGER.debug("Not connected, cannot query device")
-            return
-
-        # Step 1: Send initial query (DP 1 only)
-        self.send_initial_query(deviceId)
-
-        # Step 2: Wait briefly (50-100ms) before sending remaining queries
-        # This matches iOS app timing
-        await asyncio.sleep(0.075)  # 75ms delay
-
-        # Step 3: Send remaining queries with delays
-        await self.ensure_device_sends_statuses_async(deviceId)
 
     def send_query_command_for_device(self, device_id: str, command: dict):
         """Send a query command to a device."""

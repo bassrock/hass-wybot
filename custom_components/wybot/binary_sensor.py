@@ -1,4 +1,4 @@
-"""Platform for binary sensor integration."""
+"""Binary sensor platform for WyBot integration."""
 
 from __future__ import annotations
 
@@ -10,16 +10,25 @@ from homeassistant.components.binary_sensor import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, MANUFACTURER
 from .wybot_coordinator import WyBotCoordinator
-from .wybot_dp_models import Battery, BatteryState
+from .wybot_dp_models import Battery, BatteryState, DockConnectionStatus, SolarStatus
 from .wybot_models import Group
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def format_mac(mac: str) -> str:
+    """Format a MAC address string with colons.
+
+    Converts "CCBA97932A96" to "CC:BA:97:93:2A:96".
+    """
+    mac = mac.upper().replace(":", "").replace("-", "")
+    return ":".join(mac[i : i + 2] for i in range(0, 12, 2))
 
 
 async def async_setup_entry(
@@ -27,33 +36,36 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the binary sensor platform."""
+    """Set up the WyBot binary sensor platform."""
     coordinator: WyBotCoordinator = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities(
-        WyBotChargingSensor(idx=deviceId, coordinator=coordinator)
-        for deviceId in coordinator.vacuums
-    )
+
+    entities: list[BinarySensorEntity] = []
+
+    for device_id in coordinator.vacuums:
+        entities.extend(
+            [
+                WyBotRobotChargingBinarySensor(idx=device_id, coordinator=coordinator),
+                WyBotDockChargingBinarySensor(idx=device_id, coordinator=coordinator),
+            ]
+        )
+
+    async_add_entities(entities)
 
 
-class WyBotChargingSensor(CoordinatorEntity, BinarySensorEntity):
-    """A WyBot charging binary sensor."""
+class WyBotBinarySensorBase(BinarySensorEntity, CoordinatorEntity):
+    """Base class for WyBot binary sensors."""
 
-    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
-    _attr_has_entity_name = True
-
-    _data: Group
+    _data: Group | None
     _idx: str
     _coordinator: WyBotCoordinator
+    _attr_has_entity_name = True
 
     def __init__(self, idx: str, coordinator: WyBotCoordinator) -> None:
-        """Initialize the WyBot charging sensor."""
+        """Initialize the WyBot binary sensor."""
         super().__init__(coordinator=coordinator, context=idx)
         self._idx = idx
         self._coordinator = coordinator
-        # Initialize data safely
         self._data = coordinator.data.get(self._idx) if coordinator.data else None
-        self._attr_unique_id = f"wybot_charging_{self._idx}"
-        self._attr_translation_key = "charging"
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -67,42 +79,157 @@ class WyBotChargingSensor(CoordinatorEntity, BinarySensorEntity):
         """Return if entity is available."""
         if not self.coordinator.available:
             return False
-        # Check coordinator data directly if local data not set
-        if not self._data and str(self._idx) in self.coordinator.data:
-            self._data = self.coordinator.data[str(self._idx)]
         if not self._data:
             return False
         if str(self._idx) not in self.coordinator.data:
             return False
         return True
 
+    def _get_robot_name(self) -> str:
+        """Get the robot device name."""
+        if self._data:
+            if self._data.name:
+                return self._data.name
+            elif self._data.device and self._data.device.device_name:
+                return self._data.device.device_name
+            elif self._data.device and self._data.device.device_type:
+                return self._data.device.device_type
+        return "Unknown"
+
+    def _get_robot_model(self) -> str:
+        """Get the robot device model."""
+        if self._data and self._data.device:
+            return self._data.device.device_type
+        return "Unknown"
+
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device information."""
-        name = self._data.name if self._data else "Unknown"
-        model = (
-            self._data.device.device_type
-            if self._data and self._data.device
-            else "Unknown"
-        )
+        """Return device information for the robot."""
+        connections: set[tuple[str, str]] = set()
+        if self._data and self._data.device and self._data.device.ble_name:
+            connections.add(
+                (CONNECTION_BLUETOOTH, format_mac(self._data.device.ble_name))
+            )
+        # If dock exists, robot connects via dock; otherwise standalone
+        via_device = None
+        if self._data and self._data.docker:
+            via_device = (DOMAIN, f"{self._idx}_dock")
         return DeviceInfo(
             identifiers={(DOMAIN, str(self._idx))},
-            name=name,
+            name=self._get_robot_name(),
             manufacturer=MANUFACTURER,
-            model=model,
+            model=self._get_robot_model(),
+            connections=connections if connections else None,
+            via_device=via_device,
         )
+
+
+class WyBotRobotChargingBinarySensor(WyBotBinarySensorBase):
+    """Binary sensor for robot charging status."""
+
+    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+    _attr_translation_key = "robot_charging"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_robot_charging"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Charging"
 
     @property
     def is_on(self) -> bool | None:
-        """Return True if the vacuum is charging."""
-        # Get data from coordinator if not set locally
-        if not self._data and str(self._idx) in self.coordinator.data:
-            self._data = self.coordinator.data[str(self._idx)]
-
+        """Return True if the robot is charging."""
         if not self._data:
             return None
         battery = self._data.get_dp(Battery)
         if battery is None:
             return None
-        return battery.charge_state in (BatteryState.CHARGING, BatteryState.CHARGED)
+        return battery.charge_state == BatteryState.CHARGING
 
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return additional state attributes."""
+        attrs = {}
+        if self._data:
+            battery = self._data.get_dp(Battery)
+            if battery is not None:
+                attrs["charge_state"] = battery.charge_state.name
+                attrs["is_fully_charged"] = (
+                    battery.charge_state == BatteryState.CHARGED
+                )
+        return attrs
+
+
+class WyBotDockBinarySensorBase(WyBotBinarySensorBase):
+    """Base class for WyBot dock binary sensors - creates a separate dock device."""
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device information for the solar dock."""
+        dock_name = "Solar Dock"
+        dock_model = "Unknown"
+        connections: set[tuple[str, str]] = set()
+        if self._data and self._data.docker:
+            dock_model = self._data.docker.docker_type
+            # Use docker type as name if available
+            if self._data.docker.docker_type:
+                dock_name = f"{self._data.docker.docker_type} Solar Dock"
+            # Add Bluetooth MAC connection if available
+            if self._data.docker.ble_name:
+                connections.add(
+                    (CONNECTION_BLUETOOTH, format_mac(self._data.docker.ble_name))
+                )
+        return DeviceInfo(
+            identifiers={(DOMAIN, f"{self._idx}_dock")},
+            name=dock_name,
+            manufacturer=MANUFACTURER,
+            model=dock_model,
+            connections=connections if connections else None,
+        )
+
+
+class WyBotDockChargingBinarySensor(WyBotDockBinarySensorBase):
+    """Binary sensor for dock solar charging status."""
+
+    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+    _attr_translation_key = "dock_charging"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_dock_charging"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the sensor."""
+        return "Charging"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True if the dock is charging (solar)."""
+        if not self._data:
+            return None
+        solar_status = self._data.get_dp(SolarStatus)
+        if solar_status is None:
+            return None
+        return solar_status.is_charging
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        """Return additional state attributes."""
+        attrs = {}
+        if self._data:
+            # Add dock connection status
+            dock_status = self._data.get_dp(DockConnectionStatus)
+            if dock_status is not None:
+                attrs["is_docked"] = dock_status.is_docked
+
+            # Add solar status raw value
+            solar_status = self._data.get_dp(SolarStatus)
+            if solar_status is not None:
+                attrs["raw_value"] = solar_status.data
+        return attrs

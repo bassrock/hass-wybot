@@ -1,15 +1,88 @@
 {
+  "config": {
+    "flow_title": "{name}",
+    "step": {
+      "user": {
+        "title": "WyBot account",
+        "description": "Enter your WyBot account credentials. WiFi settings are optional and used for manual WiFi provisioning via the diagnostic button.",
+        "data": {
+          "username": "Email",
+          "password": "Password",
+          "wifi_ssid": "WiFi network name (optional)",
+          "wifi_password": "WiFi password (optional)"
+        },
+        "data_description": {
+          "wifi_ssid": "The WiFi network name your WyBot device should connect to. Used for manual WiFi provisioning via the diagnostic button.",
+          "wifi_password": "The WiFi password for the network. Required if WiFi SSID is provided."
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Failed to connect to WyBot",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unexpected error",
+      "wifi_password_required": "WiFi password is required when WiFi SSID is provided"
+    },
+    "abort": {
+      "already_configured": "Account is already configured",
+      "already_in_progress": "Configuration flow is already in progress"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "WyBot WiFi settings",
+        "description": "Configure WiFi credentials for manual provisioning. Enable the 'Send WiFi credentials' diagnostic button on your device to manually send these credentials via Bluetooth when needed.",
+        "data": {
+          "wifi_ssid": "WiFi network name",
+          "wifi_password": "WiFi password"
+        },
+        "data_description": {
+          "wifi_ssid": "The WiFi network name your WyBot device should connect to.",
+          "wifi_password": "The WiFi password for the network."
+        }
+      }
+    },
+    "error": {
+      "wifi_password_required": "WiFi password is required when WiFi SSID is provided"
+    }
+  },
   "entity": {
     "binary_sensor": {
-      "charging": {
+      "robot_charging": {
+        "name": "Charging"
+      },
+      "dock_charging": {
         "name": "Charging"
       }
     },
+    "button": {
+      "wifi_reconfigure": {
+        "name": "Send WiFi credentials"
+      }
+    },
     "sensor": {
-      "battery": {
-        "name": "Battery"
+      "robot_battery": {
+        "name": "Robot battery"
+      },
+      "dock_battery": {
+        "name": "Dock battery"
+      },
+      "solar_energy": {
+        "name": "Solar energy harvested"
+      },
+      "dock_type": {
+        "name": "Dock type"
+      },
+      "last_ble_communication": {
+        "name": "Last BLE communication"
+      },
+      "last_mqtt_communication": {
+        "name": "Last MQTT communication"
+      },
+      "data_source": {
+        "name": "Data source"
       }
     }
   }
 }
-

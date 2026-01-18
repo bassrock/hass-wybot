@@ -32,6 +32,9 @@ DEVICES_URL = "https://api.wybotpool.com/api/group/"
 # Send commands
 COMMAND_URL = "https://api.wybotpool.com/api/device/ao"
 
+# User notification endpoint - may be used for presence registration
+NOTIFICATION_URL = "https://api.wybotpool.com/api/user/notification"
+
 DEFAULT_HEADER = {
     "Content-Type": "application/json",
     "User-Agent": "WYBOT/13 CFNetwork/1498.700.2 Darwin/23.6.0",
@@ -116,17 +119,23 @@ class WyBotHTTPClient:
                     json_response = response.json()
                     response.close()
                     return LoginResponse(**json_response)
+                _LOGGER.warning(
+                    "Login attempt %d failed with status %d: %s",
+                    attempt + 1,
+                    response.status_code,
+                    response.text,
+                )
+                response.close()
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(delay)
+                    delay = min(delay * 2, MAX_RETRY_DELAY)
                 else:
-                    _LOGGER.warning("Login attempt %d failed with status %d: %s",
-                                  attempt + 1, response.status_code, response.text)
-                    response.close()
-                    if attempt < MAX_RETRIES - 1:
-                        time.sleep(delay)
-                        delay = min(delay * 2, MAX_RETRY_DELAY)
-                    else:
-                        _LOGGER.error("Error getting token after %d attempts: %s",
-                                    MAX_RETRIES, response.text)
-                        return None
+                    _LOGGER.error(
+                        "Error getting token after %d attempts: %s",
+                        MAX_RETRIES,
+                        response.text,
+                    )
+                    return None
             except requests.exceptions.Timeout as err:
                 _LOGGER.warning("Login timeout on attempt %d: %s", attempt + 1, err)
                 if attempt < MAX_RETRIES - 1:
@@ -136,13 +145,16 @@ class WyBotHTTPClient:
                     _LOGGER.error("Login timeout after %d attempts", MAX_RETRIES)
                     return None
             except requests.exceptions.RequestException as err:
-                _LOGGER.warning("Login request error on attempt %d: %s", attempt + 1, err)
+                _LOGGER.warning(
+                    "Login request error on attempt %d: %s", attempt + 1, err
+                )
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(delay)
                     delay = min(delay * 2, MAX_RETRY_DELAY)
                 else:
-                    _LOGGER.error("Error getting token after %d attempts: %s",
-                                MAX_RETRIES, err)
+                    _LOGGER.error(
+                        "Error getting token after %d attempts: %s", MAX_RETRIES, err
+                    )
                     return None
             except Exception as err:
                 _LOGGER.error("Unexpected error during login: %s", err)
@@ -177,29 +189,36 @@ class WyBotHTTPClient:
                     json_response = response.json()
                     response.close()
                     return DevicesResponse(**json_response)
-                elif response.status_code == 401:
+                if response.status_code == 401:
                     # Token expired, try to refresh
                     _LOGGER.info("Token expired, refreshing authentication")
                     response.close()
                     if self.authenticate():
                         # Retry immediately after re-auth
                         continue
-                    else:
-                        _LOGGER.error("Failed to refresh token after 401")
-                        return None
+                    _LOGGER.error("Failed to refresh token after 401")
+                    return None
+                _LOGGER.warning(
+                    "Get devices attempt %d failed with status %d: %s",
+                    attempt + 1,
+                    response.status_code,
+                    response.text,
+                )
+                response.close()
+                if attempt < MAX_RETRIES - 1:
+                    time.sleep(delay)
+                    delay = min(delay * 2, MAX_RETRY_DELAY)
                 else:
-                    _LOGGER.warning("Get devices attempt %d failed with status %d: %s",
-                                  attempt + 1, response.status_code, response.text)
-                    response.close()
-                    if attempt < MAX_RETRIES - 1:
-                        time.sleep(delay)
-                        delay = min(delay * 2, MAX_RETRY_DELAY)
-                    else:
-                        _LOGGER.error("Error getting devices after %d attempts: %s",
-                                    MAX_RETRIES, response.text)
-                        return None
+                    _LOGGER.error(
+                        "Error getting devices after %d attempts: %s",
+                        MAX_RETRIES,
+                        response.text,
+                    )
+                    return None
             except requests.exceptions.Timeout as err:
-                _LOGGER.warning("Get devices timeout on attempt %d: %s", attempt + 1, err)
+                _LOGGER.warning(
+                    "Get devices timeout on attempt %d: %s", attempt + 1, err
+                )
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(delay)
                     delay = min(delay * 2, MAX_RETRY_DELAY)
@@ -207,13 +226,16 @@ class WyBotHTTPClient:
                     _LOGGER.error("Get devices timeout after %d attempts", MAX_RETRIES)
                     return None
             except requests.exceptions.RequestException as err:
-                _LOGGER.warning("Get devices request error on attempt %d: %s", attempt + 1, err)
+                _LOGGER.warning(
+                    "Get devices request error on attempt %d: %s", attempt + 1, err
+                )
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(delay)
                     delay = min(delay * 2, MAX_RETRY_DELAY)
                 else:
-                    _LOGGER.error("Error getting devices after %d attempts: %s",
-                                MAX_RETRIES, err)
+                    _LOGGER.error(
+                        "Error getting devices after %d attempts: %s", MAX_RETRIES, err
+                    )
                     return None
             except Exception as err:
                 _LOGGER.error("Unexpected error getting devices: %s", err)
@@ -227,3 +249,42 @@ class WyBotHTTPClient:
         if response is None:
             return {}
         return {group.id: group for group in response.metadata.groups}
+
+    def register_presence(self) -> bool:
+        """Register presence with the cloud server.
+
+        This signals to the WyBot cloud that we're actively listening,
+        which may help ensure MQTT messages are relayed when devices come online.
+        Note: Devices still need to be woken up via the mobile app's BLE connection.
+        """
+        if not self._refresh_token_if_needed():
+            _LOGGER.debug("Failed to refresh token for presence registration")
+            return False
+
+        if self._user_id is None:
+            _LOGGER.debug("User ID not set for presence registration")
+            return False
+
+        # POST to notification endpoint with userId to register presence
+        try:
+            response = self._session.post(
+                NOTIFICATION_URL,
+                headers={**DEFAULT_HEADER, "Authorization": f"token {self._token}"},
+                json={"userId": self._user_id},
+                allow_redirects=False,
+                timeout=TIMEOUT,
+            )
+            success = response.status_code == 200
+            if success:
+                _LOGGER.debug("Presence registered successfully with cloud server")
+            else:
+                _LOGGER.debug(
+                    "Presence registration response: status=%d, body=%s",
+                    response.status_code,
+                    response.text[:200] if response.text else "empty",
+                )
+            response.close()
+            return success
+        except Exception as err:
+            _LOGGER.debug("Presence registration failed: %s", err)
+            return False
