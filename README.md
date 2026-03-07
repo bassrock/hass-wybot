@@ -21,7 +21,7 @@ A Home Assistant custom integration for [WyBot pool vacuums](https://www.wybotpo
 | Device | Status |
 |--------|--------|
 | S2 Pro + DS20 Solar Dock | ✅ Tested |
-| C1 | ✅ Tested |
+| C1 | 🔄 Testing in progress |
 | Other WyBot models | Should work — please report issues |
 
 ## Entities

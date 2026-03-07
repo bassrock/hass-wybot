@@ -30,7 +30,7 @@ class Command(BaseModel):
     # 9 - Data Request
     cmd: int
     dp: list[DP]
-    ts: int
+    ts: float
 
     def get_dps_as_keyed_dict(self) -> dict[str, GenericDP]:
         """Return the DP list as a keyed dictionary."""

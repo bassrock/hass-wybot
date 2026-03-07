@@ -62,7 +62,7 @@ class TestCommand:
     def test_create_from_dict(self, sample_command_data):
         cmd = Command(**sample_command_data)
         assert cmd.cmd == 5
-        assert cmd.ts == 1700000000
+        assert cmd.ts == 1700000000.0
         assert len(cmd.dp) == 3
 
     def test_dp_list_types(self, sample_command_data):
