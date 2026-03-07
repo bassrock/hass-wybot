@@ -1,12 +1,12 @@
 from enum import Enum
 import logging
 
-from pydantic import v1 as pydantic_v1
+from pydantic import BaseModel
 
 _LOGGER = logging.getLogger(__name__)
 
 
-class DP(pydantic_v1.BaseModel):
+class DP(BaseModel):
     """Represents the response for a device command operation."""
 
     # Represents a data point for a command.
@@ -16,9 +16,9 @@ class DP(pydantic_v1.BaseModel):
     id: int
 
     # All our none if we are requesting data
-    type: int | None
-    len: int | None
-    data: str | None
+    type: int | None = None
+    len: int | None = None
+    data: str | None = None
 
 
 class GenericDP:
@@ -30,7 +30,7 @@ class GenericDP:
     # 5 = string that looks like hex
     type: int
     len: int
-    data: str | None
+    data: str | None = None
 
     def __init__(self, data: DP) -> None:
         self.id = data.id
