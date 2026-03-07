@@ -39,6 +39,8 @@ tests/
 
 `conftest.py` uses `unittest.mock.MagicMock` to stub out Home Assistant, bleak, paho-mqtt, and other runtime dependencies so the pydantic data models can be tested in isolation.
 
+For a detailed list of all tests and what they verify, see [TESTS.md](TESTS.md).
+
 ## Architecture Overview
 
 See [README.md](README.md) for user-facing docs. Key modules:
