@@ -1,0 +1,209 @@
+blueprint:
+  name: "WyBot: Pool Robot Notifications & Schedule"
+  description: >
+    All-in-one blueprint for your WyBot pool robot. Enable the features you want:
+    get notified when cleaning is done, when the robot is fully charged, when
+    battery is low, and/or schedule daily automatic cleaning.
+  domain: automation
+  source_url: https://github.com/bassrock/hass-wybot
+  input:
+    vacuum_entity:
+      name: WyBot vacuum
+      description: The WyBot vacuum entity.
+      selector:
+        entity:
+          filter:
+            - integration: wybot
+              domain: vacuum
+
+    battery_sensor:
+      name: Robot battery sensor
+      description: The WyBot battery level sensor.
+      selector:
+        entity:
+          filter:
+            - integration: wybot
+              domain: sensor
+              device_class: battery
+
+    charging_sensor:
+      name: Robot charging sensor
+      description: The WyBot charging binary sensor.
+      selector:
+        entity:
+          filter:
+            - integration: wybot
+              domain: binary_sensor
+              device_class: battery_charging
+
+    notify_service:
+      name: Notification service
+      description: The notification service to use (e.g. notify.mobile_app_my_phone).
+      selector:
+        action: {}
+
+    # --- Feature toggles ---
+    enable_cleaning_done:
+      name: "🏊 Notify when cleaning is done"
+      description: Send a notification when the robot returns to the dock after cleaning.
+      default: true
+      selector:
+        boolean: {}
+
+    enable_fully_charged:
+      name: "🔋 Notify when fully charged"
+      description: Send a notification when the robot finishes charging.
+      default: true
+      selector:
+        boolean: {}
+
+    enable_low_battery:
+      name: "⚠️ Notify on low battery"
+      description: Send a notification when battery drops below a threshold.
+      default: false
+      selector:
+        boolean: {}
+
+    battery_threshold:
+      name: Low battery threshold (%)
+      description: Battery level to trigger low battery warning (only used if low battery notification is enabled).
+      default: 20
+      selector:
+        number:
+          min: 5
+          max: 50
+          step: 5
+          unit_of_measurement: "%"
+
+    enable_daily_schedule:
+      name: "📅 Daily cleaning schedule"
+      description: Automatically start cleaning at a set time each day.
+      default: false
+      selector:
+        boolean: {}
+
+    schedule_time:
+      name: Scheduled start time
+      description: Time to start daily cleaning (only used if schedule is enabled).
+      default: "10:00:00"
+      selector:
+        time: {}
+
+    min_battery_for_schedule:
+      name: Minimum battery for scheduled cleaning (%)
+      description: Only start scheduled cleaning if battery is above this level.
+      default: 50
+      selector:
+        number:
+          min: 10
+          max: 100
+          step: 10
+          unit_of_measurement: "%"
+
+    cleaning_mode:
+      name: Cleaning mode for schedule
+      description: Which cleaning mode to use for scheduled runs.
+      default: "Floor"
+      selector:
+        select:
+          options:
+            - "Floor"
+            - "Wall"
+            - "Wall Then Floor"
+            - "Advanced Full Pool"
+            - "Water Line"
+            - "Turbo Floor"
+            - "Eco Floor"
+
+trigger:
+  - platform: state
+    entity_id: !input vacuum_entity
+    from: "cleaning"
+    to: "docked"
+    id: cleaning_done
+
+  - platform: state
+    entity_id: !input vacuum_entity
+    from: "returning"
+    to: "docked"
+    id: cleaning_done
+
+  - platform: state
+    entity_id: !input charging_sensor
+    from: "on"
+    to: "off"
+    id: fully_charged
+
+  - platform: numeric_state
+    entity_id: !input battery_sensor
+    below: !input battery_threshold
+    id: low_battery
+
+  - platform: time
+    at: !input schedule_time
+    id: daily_schedule
+
+action:
+  - choose:
+      # --- Cleaning done ---
+      - conditions:
+          - condition: trigger
+            id: cleaning_done
+          - condition: !input enable_cleaning_done
+        sequence:
+          - action: !input notify_service
+            data:
+              title: "🏊 WyBot Cleaning Complete"
+              message: "Your pool robot has finished cleaning and is back in the dock."
+
+      # --- Fully charged ---
+      - conditions:
+          - condition: trigger
+            id: fully_charged
+          - condition: !input enable_fully_charged
+        sequence:
+          - action: !input notify_service
+            data:
+              title: "🔋 WyBot Fully Charged"
+              message: "Your WyBot pool robot is fully charged and ready to clean!"
+
+      # --- Low battery ---
+      - conditions:
+          - condition: trigger
+            id: low_battery
+          - condition: !input enable_low_battery
+        sequence:
+          - action: !input notify_service
+            data:
+              title: "⚠️ WyBot Battery Low"
+              message: >-
+                WyBot battery is at {{ states(trigger.entity_id) }}%.
+                Consider returning to dock.
+
+      # --- Daily schedule ---
+      - conditions:
+          - condition: trigger
+            id: daily_schedule
+          - condition: !input enable_daily_schedule
+          - condition: state
+            entity_id: !input vacuum_entity
+            state: "docked"
+          - condition: numeric_state
+            entity_id: !input battery_sensor
+            above: !input min_battery_for_schedule
+        sequence:
+          - action: vacuum.set_fan_speed
+            target:
+              entity_id: !input vacuum_entity
+            data:
+              fan_speed: !input cleaning_mode
+          - action: vacuum.start
+            target:
+              entity_id: !input vacuum_entity
+          - action: !input notify_service
+            data:
+              title: "🏊 WyBot Cleaning Started"
+              message: "Scheduled pool cleaning started."
+
+mode: queued
+max: 5

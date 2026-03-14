@@ -21,7 +21,7 @@ A Home Assistant custom integration for [WyBot pool vacuums](https://www.wybotpo
 | Device | Status |
 |--------|--------|
 | S2 Pro + DS20 Solar Dock | ✅ Tested |
-| C1 | 🔄 Testing in progress |
+| C1 | ✅ Tested |
 | Other WyBot models | Should work — please report issues |
 
 ## Entities
@@ -89,6 +89,16 @@ Commands (start, stop, return to dock) are also sent via BLE first, falling back
 > **⚠️ Important:** The dock must be set up **before** the robot. You must first set up the dock and connect it to WiFi, then pair the robot with it. There is no way to configure WiFi on the dock after the robot has been paired.
 
 WyBot robots disconnect from WiFi when submerged. The dock stays connected to WiFi and relays commands to the robot underwater via Bluetooth.
+
+## Blueprints
+
+A comprehensive "All-in-One" automation blueprint is included in the `blueprints/` directory:
+
+| Blueprint | Description |
+|-----------|-------------|
+| **WyBot: Pool Robot Notifications & Schedule** | A powerful multi-function blueprint that handles cleaning completion notifications, full charge alerts, low battery warnings, and daily cleaning schedules with mode selection and battery checks. |
+
+To import the blueprint, copy `blueprints/wybot_all_in_one.yaml` to your Home Assistant `config/blueprints/automation/wybot/` directory, or use the **Import Blueprint** feature in the HA UI.
 
 ## Contributing
 
