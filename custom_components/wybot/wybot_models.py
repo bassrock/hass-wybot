@@ -2,9 +2,11 @@
 
 from typing import TypeVar
 
-from pydantic import v1 as pydantic_v1
+from pydantic import BaseModel, ConfigDict, Field
 
 from .wybot_dp_models import DP, GenericDP, wybot_dp_id
+
+T = TypeVar("T", bound=GenericDP)
 
 
 def to_snake_case(string: str) -> str:
@@ -20,7 +22,7 @@ def to_snake_case(string: str) -> str:
     return "".join(["_" + i.lower() if i.isupper() else i for i in string]).lstrip("_")
 
 
-class Command(pydantic_v1.BaseModel):
+class Command(BaseModel):
     """Represents a command to be sent or received from a device."""
 
     # 4 - Send Write Command
@@ -28,39 +30,37 @@ class Command(pydantic_v1.BaseModel):
     # 9 - Data Request
     cmd: int
     dp: list[DP]
-    ts: int
+    ts: float
 
     def get_dps_as_keyed_dict(self) -> dict[str, GenericDP]:
         """Return the DP list as a keyed dictionary."""
         return {str(dp.id): wybot_dp_id.get(dp.id, GenericDP)(dp) for dp in self.dp}
 
-    class Config:
-        """Represents the configuration options for the class."""
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+    )
 
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
 
-
-class LoginMetadata(pydantic_v1.BaseModel):
+class LoginMetadata(BaseModel):
     """Represents the metadata for a user."""
 
-    user_id: str = pydantic_v1.Field(alias="userId")
+    user_id: str = Field(alias="userId")
     token: str
     username: str
     name: str
     avatar: str
     groupid: int
-    reg_time: int = pydantic_v1.Field(alias="regTime")
-    last_login_time: int = pydantic_v1.Field(alias="lastLoginTime")
+    reg_time: int = Field(alias="regTime")
+    last_login_time: int = Field(alias="lastLoginTime")
 
-    class Config:
-        """Represents the configuration options for the class."""
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+    )
 
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
 
-
-class LoginResponse(pydantic_v1.BaseModel):
+class LoginResponse(BaseModel):
     """Represents the response for a login operation."""
 
     code: int
@@ -69,34 +69,31 @@ class LoginResponse(pydantic_v1.BaseModel):
     metadata: LoginMetadata | None = None
 
 
-class Version(pydantic_v1.BaseModel):
+class Version(BaseModel):
     """Represents the firmware version information for a device."""
 
-    firmware: str | None = pydantic_v1.Field(alias="Firmware")
+    firmware: str | None = Field(default=None, alias="Firmware")
 
-    class Config:
-        """Represents the configuration options for the class."""
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+    )
 
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
 
-
-class Device(pydantic_v1.BaseModel):
+class Device(BaseModel):
     """Represents a device's information including identifiers, type, and version."""
 
-    device_id: str = pydantic_v1.Field(alias="deviceId")
-    device_name: str = pydantic_v1.Field(alias="deviceName")
-    device_type: str = pydantic_v1.Field(alias="deviceType")
-    ble_name: str = pydantic_v1.Field(alias="bleName")
+    device_id: str = Field(alias="deviceId")
+    device_name: str = Field(alias="deviceName")
+    device_type: str = Field(alias="deviceType")
+    ble_name: str = Field(alias="bleName")
     version: Version | None = None
-    pool_id: str | None = pydantic_v1.Field(alias="poolId")
-    auto_update: str = pydantic_v1.Field(alias="autoUpdate")
+    pool_id: str | None = Field(default=None, alias="poolId")
+    auto_update: str = Field(alias="autoUpdate")
 
-    "Extra added fields"
+    # Extra added fields
     online: bool = False
     dps: dict[str, DP] = {}
-
-    T = TypeVar("T", bound=GenericDP)
 
     def get_dp(self, cls: type[T]) -> T | None:
         """Get the specified DP from the device.
@@ -117,37 +114,33 @@ class Device(pydantic_v1.BaseModel):
                 return dp
         return None
 
-    class Config:
-        """Represents the configuration options for the class."""
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+    )
 
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
 
-
-class Docker(pydantic_v1.BaseModel):
+class Docker(BaseModel):
     """Represents a Docker container's information including identifiers, status, and schedule."""
 
-    docker_id: str = pydantic_v1.Field(alias="dockerId")
-    docker_type: str = pydantic_v1.Field(alias="dockerType")
-    ble_name: str = pydantic_v1.Field(alias="bleName")
-    device_status: str = pydantic_v1.Field(alias="deviceStatus")
-    docker_status: str = pydantic_v1.Field(alias="dockerStatus")
-    schedule: str | None = pydantic_v1.Field(alias="schedule")
+    docker_id: str = Field(alias="dockerId")
+    docker_type: str = Field(alias="dockerType")
+    ble_name: str = Field(alias="bleName")
+    device_status: str = Field(alias="deviceStatus")
+    docker_status: str = Field(alias="dockerStatus")
+    schedule: str | None = Field(default=None, alias="schedule")
     version: Version | None = None
 
-    "Extra added fields"
+    # Extra added fields
     online: bool = False
     dps: dict[str, DP] = {}
 
-    class Config:
-        """Represents the configuration options for the class."""
-
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-
-    T = TypeVar("T", bound=GenericDP)
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+    )
 
     def get_dp(self, cls: type[T]) -> T | None:
         """Get the specified DP from the device.
@@ -169,41 +162,37 @@ class Docker(pydantic_v1.BaseModel):
         return None
 
 
-class Vision(pydantic_v1.BaseModel):
+class Vision(BaseModel):
     """Represents vision-related information including privacy settings, logs, and media."""
 
-    vision_id: str | None = pydantic_v1.Field(alias="visionId")
+    vision_id: str | None = Field(default=None, alias="visionId")
     privacy: bool
-    log: str | None
-    video: str | None
-    picture: str | None
+    log: str | None = None
+    video: str | None = None
+    picture: str | None = None
     policy: bool
 
-    class Config:
-        """Represents the configuration options for the class."""
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+    )
 
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
 
-
-class Group(pydantic_v1.BaseModel):
+class Group(BaseModel):
     """Represents a group containing Docker, Device, and Vision information."""
 
-    docker: Docker | None
+    docker: Docker | None = None
     device: Device
     vision: Vision
     name: str
     id: str
-    auto_update: str = pydantic_v1.Field(alias="autoUpdate")
+    auto_update: str = Field(alias="autoUpdate")
 
-    class Config:
-        """Represents the configuration options for the class."""
-
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
-        arbitrary_types_allowed = True
-
-    T = TypeVar("T", bound=GenericDP)
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+        arbitrary_types_allowed=True,
+    )
 
     def get_dp(self, cls: type[T]) -> T | None:
         if not issubclass(cls, GenericDP):
@@ -220,19 +209,18 @@ class Group(pydantic_v1.BaseModel):
         return None
 
 
-class DeviceMetadata(pydantic_v1.BaseModel):
+class DeviceMetadata(BaseModel):
     """Represents metadata containing a list of groups."""
 
     groups: list[Group]
 
-    class Config:
-        """Represents the configuration options for the class."""
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+    )
 
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
 
-
-class DevicesResponse(pydantic_v1.BaseModel):
+class DevicesResponse(BaseModel):
     """Represents the API response for devices containing status code, reason, message, and metadata."""
 
     code: int
@@ -240,8 +228,7 @@ class DevicesResponse(pydantic_v1.BaseModel):
     message: str
     metadata: DeviceMetadata
 
-    class Config:
-        """Represents the configuration options for the class."""
-
-        alias_generator = to_snake_case
-        allow_population_by_field_name = True
+    model_config = ConfigDict(
+        alias_generator=to_snake_case,
+        populate_by_name=True,
+    )

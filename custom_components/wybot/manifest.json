@@ -6,15 +6,24 @@
       "local_name": "DS20-*"
     }
   ],
-  "codeowners": ["@bassrock"],
+  "codeowners": [
+    "@bassrock"
+  ],
   "config_flow": true,
-  "dependencies": ["bluetooth_adapters"],
+  "dependencies": [
+    "bluetooth_adapters"
+  ],
   "documentation": "https://github.com/bassrock/hass-wybot",
   "homekit": {},
   "iot_class": "cloud_push",
-  "requirements": ["pydantic", "paho-mqtt", "bleak"],
+  "requirements": [
+    "paho-mqtt",
+    "bleak"
+  ],
   "ssdp": [],
   "zeroconf": [],
   "version": "2.0.0",
-  "loggers": ["custom_components.wybot"]
+  "loggers": [
+    "custom_components.wybot"
+  ]
 }
