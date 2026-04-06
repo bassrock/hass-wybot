@@ -294,56 +294,6 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
     # Schedule the startup scan
     hass.async_create_task(run_startup_ble_scan())
 
-    # Test: Send start cleaning command via BLE after startup
-    async def test_ble_start_cleaning():
-        """Test sending start cleaning command via BLE."""
-        await asyncio.sleep(20)  # Wait for BLE to fully initialize
-
-        _LOGGER.info("=" * 60)
-        _LOGGER.info("=== TEST: Sending START CLEANING command via BLE ===")
-        _LOGGER.info("=" * 60)
-
-        # Send to dock (dock relays commands to robot)
-        # DS20 Solar Dock: 3C8427565A1A
-        # S2 Pro Robot: CCBA97932A96
-        dock_ble_name = "3C8427565A1A"
-
-        try:
-            from .wybot_dp_models import DP, CleaningStatus, CleaningStatusMode
-
-            ble_client = WyBotBLEClient(hass)
-
-            # Create start cleaning command: DP 0, type 4, len 1, data "03"
-            start_cmd = CleaningStatus()
-            start_cmd.status = CleaningStatusMode.CLEANING  # Sets data to "03"
-
-            _LOGGER.info(
-                "Sending command: DP id=%d, type=%d, len=%d, data=%s",
-                start_cmd.id, start_cmd.type, start_cmd.len, start_cmd.data
-            )
-
-            success, response_dps = await ble_client.send_command(dock_ble_name, start_cmd)
-
-            if success:
-                _LOGGER.info("✓ Start cleaning command sent successfully!")
-                if response_dps:
-                    _LOGGER.info("Response DPs:")
-                    for dp in response_dps:
-                        _LOGGER.info("  DP %d: type=%d, len=%d, data=%s",
-                                    dp["id"], dp["type"], dp["len"], dp["data"])
-            else:
-                _LOGGER.warning("✗ Failed to send start cleaning command")
-
-        except Exception as err:
-            _LOGGER.error("Error in BLE start cleaning test: %s", err)
-
-        _LOGGER.info("=" * 60)
-        _LOGGER.info("=== END TEST ===")
-        _LOGGER.info("=" * 60)
-
-    # Run the start cleaning test on startup (RE-ENABLED - testing undock behavior)
-    hass.async_create_task(test_ble_start_cleaning())
-
     # Add a service to trigger start cleaning via BLE
     async def handle_ble_start_cleaning(call: ServiceCall) -> ServiceResponse:
         """Handle BLE start cleaning service call."""

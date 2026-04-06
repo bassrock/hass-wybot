@@ -1,6 +1,5 @@
 """Library for interacting with the WyBot MQTT API."""
 
-import asyncio
 from collections.abc import Callable
 import json
 import logging
@@ -21,12 +20,6 @@ MQTT_URL = "mqtt.wybotpool.com"
 USERNAME = "wyindustry"
 PASWORD = "nwe_GTG4faf2qyx8ugx"
 
-# Connection retry configuration
-MAX_RECONNECT_RETRIES = 5
-INITIAL_RECONNECT_DELAY = 1.0
-MAX_RECONNECT_DELAY = 30.0
-CONNECTION_TIMEOUT = 10.0
-
 # Flag to disable MQTT command sending (useful for recording iOS app traffic)
 # Set to True to prevent Home Assistant from sending any commands
 DISABLE_MQTT_COMMANDS = False
@@ -35,126 +28,45 @@ DISABLE_MQTT_COMMANDS = False
 class WyBotMQTTClient:
     """Client for interacting with the WyBot MQTT API."""
 
-    _mqtt: mqtt.Client
-    _subscriptions: list[str] = []
-    _on_message: Callable
-
-    _devices: list[str] = []
-    _connected: bool = False
-    _connecting: bool = False
-    _reconnect_retries: int = 0
-    _connection_event: asyncio.Event | None = None
-
     def __init__(self, on_message: Callable) -> None:
         """Init the wybot mqtt api."""
+        # Instance-level state (not class-level to avoid sharing across instances)
+        self._subscriptions: set[str] = set()
+        self._devices: set[str] = set()
+        self._connected: bool = False
+        self._connecting: bool = False
+        self._loop_started: bool = False
+
         # Generate a UUID-based client ID like mobile apps use
-        # Format: wybot-{uuid} to mimic app behavior
         client_id = f"wybot-{uuid.uuid4()}"
         _LOGGER.debug("MQTT client ID: %s", client_id)
         self._mqtt = mqtt.Client(client_id=client_id, clean_session=True)
         self._mqtt.username_pw_set(USERNAME, PASWORD)
-        self._mqtt.on_connect = self.on_connect
-        self._mqtt.on_message = self.on_message
-        self._mqtt.on_connect_fail = self.on_connect_fail
-        self._mqtt.on_disconnect = self.on_disconnect
+        self._mqtt.on_connect = self._on_connect
+        self._mqtt.on_message = self._on_message_handler
+        self._mqtt.on_connect_fail = self._on_connect_fail
+        self._mqtt.on_disconnect = self._on_disconnect
+        # Enable paho's built-in auto-reconnect with exponential backoff
+        self._mqtt.reconnect_delay_set(min_delay=1, max_delay=60)
         self._on_message = on_message
-        self._connection_event = asyncio.Event()
 
     def connect(self):
         """Connect to the MQTT server."""
-        if self._connecting:
-            _LOGGER.debug("Connection already in progress")
+        if self._connecting or self._connected:
+            _LOGGER.debug("Already connected or connection in progress")
             return
         _LOGGER.debug("Connecting to wybot mqtt server %s", MQTT_URL)
         self._connecting = True
         self._connected = False
-        self._reconnect_retries = 0
-        self._connection_event = asyncio.Event()
-        self._mqtt.loop_start()
         try:
             self._mqtt.connect(MQTT_URL)
+            if not self._loop_started:
+                self._mqtt.loop_start()
+                self._loop_started = True
         except Exception as err:
             _LOGGER.error("Failed to initiate MQTT connection: %s", err)
             self._connecting = False
             self._connected = False
-
-    async def async_reconnect(self) -> bool:
-        """Re-connect to the MQTT server with exponential backoff."""
-        if self._connecting:
-            _LOGGER.debug("Reconnection already in progress")
-            return False
-
-        if self._reconnect_retries >= MAX_RECONNECT_RETRIES:
-            _LOGGER.error("Max reconnection retries reached, giving up")
-            self._connected = False
-            return False
-
-        self._connecting = True
-        self._connected = False
-        delay = min(
-            INITIAL_RECONNECT_DELAY * (2**self._reconnect_retries), MAX_RECONNECT_DELAY
-        )
-        self._reconnect_retries += 1
-
-        _LOGGER.debug(
-            "Reconnecting to wybot mqtt server %s (attempt %d/%d, delay %.1fs)",
-            MQTT_URL,
-            self._reconnect_retries,
-            MAX_RECONNECT_RETRIES,
-            delay,
-        )
-
-        await asyncio.sleep(delay)
-
-        self._connection_event = asyncio.Event()
-        try:
-            self._mqtt.reconnect()
-            # Wait for connection to complete with timeout
-            try:
-                await asyncio.wait_for(
-                    self._connection_event.wait(), timeout=CONNECTION_TIMEOUT
-                )
-                if self._connected:
-                    _LOGGER.info("Successfully reconnected to MQTT server")
-                    self._reconnect_retries = 0
-                    return True
-                _LOGGER.warning("Reconnection attempt failed")
-                return False
-            except TimeoutError:
-                _LOGGER.warning("Reconnection timeout after %.1fs", CONNECTION_TIMEOUT)
-                return False
-        except Exception as err:
-            _LOGGER.error("Failed to reconnect: %s", err)
-            self._connecting = False
-            self._connected = False
-            return False
-
-    def reconnect(self):
-        """Synchronous reconnect (for backward compatibility)."""
-        if self._connecting:
-            return
-        _LOGGER.debug("Synchronous reconnect called, initiating async reconnect")
-        # Create a task for async reconnect if we're in an async context
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # Schedule the async reconnect
-                asyncio.create_task(self.async_reconnect())
-            else:
-                # Run in the event loop
-                loop.run_until_complete(self.async_reconnect())
-        except RuntimeError:
-            # No event loop, just try direct reconnect
-            _LOGGER.debug("No event loop available, using direct reconnect")
-            self._connecting = True
-            self._connected = False
-            self._connection_event = asyncio.Event()
-            try:
-                self._mqtt.reconnect()
-            except Exception as err:
-                _LOGGER.error("Failed to reconnect: %s", err)
-                self._connecting = False
-                self._connected = False
 
     def is_connected(self) -> bool:
         """Check if connected to the MQTT server."""
@@ -165,73 +77,72 @@ class WyBotMQTTClient:
         _LOGGER.info("Stopping MQTT client")
         self._connected = False
         self._connecting = False
-        self._mqtt.loop_stop()
+        if self._loop_started:
+            self._mqtt.loop_stop()
+            self._loop_started = False
         try:
             self._mqtt.disconnect()
         except Exception as err:
             _LOGGER.debug("Error during disconnect: %s", err)
 
-    def on_connect(self, client: mqtt.Client, userdata, flags, reason_code):
+    def _on_connect(self, client: mqtt.Client, userdata, flags, reason_code):
         """Handle successful connection."""
         if reason_code == 0:
-            _LOGGER.debug("Connected with result code %d", reason_code)
+            _LOGGER.info("MQTT connected successfully")
             self._connected = True
             self._connecting = False
-            self._reconnect_retries = 0
-            # Re-subscribe to all topics
+            # Re-subscribe to all topics on (re)connect
             for subscription in self._subscriptions:
                 client.subscribe(subscription)
             # Request status updates for all devices
             for device in self._devices:
                 self.ensure_device_sends_statuses(device)
-            # Signal connection event
-            if self._connection_event:
-                self._connection_event.set()
         else:
-            _LOGGER.warning("Connection failed with result code %d", reason_code)
+            _LOGGER.warning("MQTT connection failed with result code %d", reason_code)
             self._connected = False
             self._connecting = False
-            if self._connection_event:
-                self._connection_event.set()
 
-    def on_connect_fail(self, client, userdata):
+    def _on_connect_fail(self, client, userdata):
         """Handle connection failure."""
-        _LOGGER.debug("Connect failed")
+        _LOGGER.warning("MQTT connect failed, paho will auto-retry")
         self._connected = False
         self._connecting = False
-        if self._connection_event:
-            self._connection_event.set()
 
-    def on_disconnect(self, client, userdata, rc):
-        """Handle disconnection."""
-        _LOGGER.debug("Disconnected with result code %d", rc)
+    def _on_disconnect(self, client, userdata, rc):
+        """Handle disconnection. Paho auto-reconnects if rc != 0."""
         self._connected = False
         self._connecting = False
-        # If disconnect was unexpected (rc != 0), we'll reconnect on next update
-        if rc != 0:
-            _LOGGER.info("Unexpected disconnection, will attempt to reconnect")
+        if rc == 0:
+            _LOGGER.debug("MQTT disconnected cleanly")
+        else:
+            _LOGGER.warning(
+                "MQTT unexpected disconnect (rc=%d), paho will auto-reconnect", rc
+            )
 
     def subscribe_for_device(self, device_id):
-        """Subscribe to a device."""
-        _LOGGER.debug(f"Subscribing to wybot mqtt for device {device_id}")
-        self._subscriptions.append(f"/will/{device_id}")
-        self._subscriptions.append(f"/device/DATA/send_transparent_data/{device_id}")
-        self._subscriptions.append(
-            f"/device/DATA/recv_transparent_query_data/{device_id}"
-        )
-        self._subscriptions.append(
-            f"/device/DATA/recv_transparent_cmd_data/{device_id}"
-        )
-        self._subscriptions.append(f"/device/OTA/post_update_progress/{device_id}")
-        self._subscriptions.append(f"/device/OTA/notify_ready_to_update/{device_id}")
-        self._devices.append(device_id)
-        for subscription in self._subscriptions:
-            self._mqtt.subscribe(subscription)
+        """Subscribe to a device (idempotent — safe to call multiple times)."""
+        if device_id in self._devices:
+            _LOGGER.debug("Already subscribed to device %s", device_id)
+            return
+
+        _LOGGER.debug("Subscribing to wybot mqtt for device %s", device_id)
+        topics = [
+            f"/will/{device_id}",
+            f"/device/DATA/send_transparent_data/{device_id}",
+            f"/device/DATA/recv_transparent_query_data/{device_id}",
+            f"/device/DATA/recv_transparent_cmd_data/{device_id}",
+            f"/device/OTA/post_update_progress/{device_id}",
+            f"/device/OTA/notify_ready_to_update/{device_id}",
+        ]
+        for topic in topics:
+            self._subscriptions.add(topic)
+            self._mqtt.subscribe(topic)
+        self._devices.add(device_id)
         self.ensure_device_sends_statuses(device_id)
 
     def ensure_device_sends_statuses(self, deviceId: str):
         """Ensure that a device sends statuses."""
-        _LOGGER.debug(f"Ensuring device sends statuses {deviceId}")
+        _LOGGER.debug("Ensuring device sends statuses %s", deviceId)
 
         # Query DPs individually in the exact order the iOS app uses
         # iOS app queries: 1, 79, 1, 0, 77 (DP 1 is queried twice)
@@ -256,7 +167,7 @@ class WyBotMQTTClient:
                 "MQTT commands disabled, skipping query: %s - %s", device_id, command
             )
             return
-        _LOGGER.info("SENDING QUERY - %s - %s", device_id, command)
+        _LOGGER.debug("SENDING QUERY - %s - %s", device_id, command)
         if not self.is_connected():
             _LOGGER.debug(
                 "Not connected, cannot send query command (will retry when connected)"
@@ -299,18 +210,15 @@ class WyBotMQTTClient:
         except Exception as err:
             _LOGGER.error("Error sending write command: %s", err)
 
-    def on_message(self, client, userdata, msg):
+    def _on_message_handler(self, client, userdata, msg):
         """Handle the incoming message from the MQTT server."""
         try:
             payload = json.loads(msg.payload)
-            # Log all incoming MQTT messages for monitoring (especially useful when DISABLE_MQTT_COMMANDS is True)
-            # This captures everything: iOS app commands, device responses, etc.
-            _LOGGER.info(
+            _LOGGER.debug(
                 "MQTT RECEIVED - Topic: %s, Payload: %s", msg.topic, json.dumps(payload)
             )
         except (json.JSONDecodeError, UnicodeDecodeError):
-            # If payload is not JSON, log as string
-            _LOGGER.info(
+            _LOGGER.debug(
                 "MQTT RECEIVED - Topic: %s, Payload (raw): %s", msg.topic, msg.payload
             )
             payload = msg.payload

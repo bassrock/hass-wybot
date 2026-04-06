@@ -25,6 +25,12 @@ MAX_HTTP_RETRIES = 3
 INITIAL_RETRY_DELAY = 1.0
 MAX_RETRY_DELAY = 10.0
 
+# Overall update timeout — safety net; individual operations have their own timeouts
+UPDATE_TIMEOUT = 120
+
+# BLE failure recovery — re-enable BLE after this many seconds
+BLE_RECOVERY_SECONDS = 300  # 5 minutes
+
 
 class WyBotCoordinator(DataUpdateCoordinator):
     """Coordinates data between WyBot and Homeassistant.
@@ -52,6 +58,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
     # BLE command tracking
     _ble_command_enabled: bool = True
     _ble_command_failures: dict[str, int]  # device_id -> consecutive failure count
+    _ble_disabled_at: dict[str, float]  # device_id -> time.time() when BLE was disabled
 
     # WiFi credentials for manual provisioning via diagnostic button
     _wifi_ssid: str | None = None
@@ -100,6 +107,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
 
         # Initialize BLE command tracking
         self._ble_command_failures = {}
+        self._ble_disabled_at = {}
 
         # Load WiFi credentials from config entry (for manual provisioning)
         self._wifi_ssid = config_entry.data.get(CONF_WIFI_SSID)
@@ -249,6 +257,18 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 list(dp_dict.keys()),
             )
 
+    def _maybe_recover_ble(self, device_id: str) -> None:
+        """Re-enable BLE for a device if enough time has passed since it was disabled."""
+        disabled_at = self._ble_disabled_at.get(device_id)
+        if disabled_at is not None and (time.time() - disabled_at) >= BLE_RECOVERY_SECONDS:
+            _LOGGER.info(
+                "Re-enabling BLE for device %s after %ds recovery period",
+                device_id,
+                BLE_RECOVERY_SECONDS,
+            )
+            self._ble_command_failures.pop(device_id, None)
+            self._ble_disabled_at.pop(device_id, None)
+
     async def _poll_all_devices_via_ble(self) -> list[str]:
         """Poll all devices via BLE (primary data source).
 
@@ -270,6 +290,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     devices_needing_mqtt.append(group.device.device_id)
                 continue
 
+            # Check if BLE should be recovered for this device
+            self._maybe_recover_ble(device_id)
+
             _LOGGER.debug(
                 "BLE polling device %s via %s (primary)",
                 device_id,
@@ -280,8 +303,8 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 dps = await self.wybot_ble_client.query_status(ble_name)
 
                 if dps:
-                    _LOGGER.info(
-                        "✓ BLE poll success for %s: %d DPs received",
+                    _LOGGER.debug(
+                        "BLE poll success for %s: %d DPs received",
                         device_id,
                         len(dps),
                     )
@@ -331,7 +354,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
             )
             return
 
-        _LOGGER.info(
+        _LOGGER.debug(
             "Using MQTT fallback for %d devices: %s",
             len(device_ids),
             device_ids,
@@ -377,7 +400,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
         3. HTTP session refresh - keeps MQTT fallback ready
         """
         try:
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(UPDATE_TIMEOUT):
                 # First update: HTTP setup to get device list
                 if not self.initial_load:
                     self.initial_load = True
@@ -508,19 +531,17 @@ class WyBotCoordinator(DataUpdateCoordinator):
         """Handle a message from MQTT."""
         data_updated = False
 
-        # Enhanced logging to debug MQTT message flow
-        _LOGGER.info(
-            "MQTT on_message called - Topic: %s, Data keys: %s, cmd: %s",
+        _LOGGER.debug(
+            "MQTT on_message - Topic: %s, cmd: %s",
             topic,
-            list(data.keys()) if isinstance(data, dict) else "not-a-dict",
             data.get("cmd") if isinstance(data, dict) else "N/A",
         )
 
         if topic.startswith("/will/"):
             deviceId = topic[6:]
             is_online = data.get("online") == "1"
-            _LOGGER.info(
-                "Device %s online status changed to: %s",
+            _LOGGER.debug(
+                "Device %s online status: %s",
                 deviceId,
                 "online" if is_online else "offline",
             )
@@ -537,8 +558,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 # Track online devices
                 if is_online:
                     self._online_devices.add(deviceId)
-                    # Device just came online, query for status immediately
-                    _LOGGER.info("Device %s came online, querying status", deviceId)
+                    _LOGGER.debug("Device %s came online, querying status", deviceId)
                     self.wybot_mqtt_client.ensure_device_sends_statuses(deviceId)
                 else:
                     self._online_devices.discard(deviceId)
@@ -549,18 +569,16 @@ class WyBotCoordinator(DataUpdateCoordinator):
             deviceId = topic[35:]
             # Record that we received MQTT data from this device
             self._record_mqtt_data_received(deviceId)
-            _LOGGER.info(
-                "Processing send_transparent_data for device %s, raw data: %s",
+            _LOGGER.debug(
+                "Processing send_transparent_data for device %s",
                 deviceId,
-                data,
             )
             try:
                 command_response = Command(**data)
-                _LOGGER.info(
-                    "Parsed Command: cmd=%s, dp_count=%s, dps=%s",
+                _LOGGER.debug(
+                    "Parsed Command: cmd=%s, dp_count=%s",
                     command_response.cmd,
                     len(command_response.dp),
-                    [{"id": dp.id, "type": dp.type, "len": dp.len, "data": dp.data} for dp in command_response.dp],
                 )
             except Exception as err:
                 _LOGGER.error("Failed to parse Command from data: %s, error: %s", data, err)
@@ -570,7 +588,6 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 return
 
             group = self.get_group(deviceId)
-            _LOGGER.info("Found group for device %s: %s", deviceId, group.id if group else None)
             if (
                 group is not None
                 and group.docker is not None
@@ -580,10 +597,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     **group.docker.dps,
                     **command_response.get_dps_as_keyed_dict(),
                 }
-                _LOGGER.info(
-                    "SEND RESPONSE ---- docker - %s ---- Current DPs: %s",
+                _LOGGER.debug(
+                    "Updated docker %s DPs from send_transparent_data",
                     deviceId,
-                    group.docker.dps,
                 )
                 data_updated = True
             elif group is not None and group.device is not None:
@@ -591,10 +607,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     **group.device.dps,
                     **command_response.get_dps_as_keyed_dict(),
                 }
-                _LOGGER.info(
-                    "SEND RESPONSE ---- device - %s ---- Current DPs: %s",
+                _LOGGER.debug(
+                    "Updated device %s DPs from send_transparent_data",
                     deviceId,
-                    group.device.dps,
                 )
                 data_updated = True
             if group is not None:
@@ -625,20 +640,18 @@ class WyBotCoordinator(DataUpdateCoordinator):
                         **group.docker.dps,
                         **command_response.get_dps_as_keyed_dict(),
                     }
-                    _LOGGER.info(
-                        "Updated docker %s DPs from cmd_data: %s",
+                    _LOGGER.debug(
+                        "Updated docker %s DPs from cmd_data",
                         deviceId,
-                        command_response.get_dps_as_keyed_dict(),
                     )
                 elif group.device is not None:
                     group.device.dps = {
                         **group.device.dps,
                         **command_response.get_dps_as_keyed_dict(),
                     }
-                    _LOGGER.info(
-                        "Updated device %s DPs from cmd_data: %s",
+                    _LOGGER.debug(
+                        "Updated device %s DPs from cmd_data",
                         deviceId,
-                        command_response.get_dps_as_keyed_dict(),
                     )
                 self.data[group.id] = group
                 data_updated = True
@@ -698,6 +711,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
         elif group.device and group.device.ble_name:
             ble_name = group.device.ble_name
 
+        # Check if BLE should be recovered for this device
+        self._maybe_recover_ble(device_id)
+
         # Check if BLE commands are enabled for this device
         ble_enabled = (
             self._ble_command_enabled
@@ -706,7 +722,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
         )
 
         if ble_enabled:
-            _LOGGER.info(
+            _LOGGER.debug(
                 "Attempting BLE-first command for device %s via %s (DP id=%d)",
                 device_id,
                 ble_name,
@@ -716,8 +732,8 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 ble_success, ble_dps = await self.wybot_ble_client.send_command(ble_name, dp)
 
                 if ble_success:
-                    _LOGGER.info(
-                        "✓ BLE command succeeded for device %s",
+                    _LOGGER.debug(
+                        "BLE command succeeded for device %s",
                         device_id,
                     )
                     # Reset failure count on success
@@ -740,10 +756,12 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 )
 
                 if failures >= BLE_MAX_CONSECUTIVE_FAILURES:
+                    self._ble_disabled_at[device_id] = time.time()
                     _LOGGER.warning(
-                        "BLE commands disabled for device %s after %d consecutive failures",
+                        "BLE commands disabled for device %s after %d consecutive failures (will retry in %ds)",
                         device_id,
                         failures,
+                        BLE_RECOVERY_SECONDS,
                     )
 
             except Exception as err:
@@ -757,6 +775,8 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     failures,
                     BLE_MAX_CONSECUTIVE_FAILURES,
                 )
+                if failures >= BLE_MAX_CONSECUTIVE_FAILURES:
+                    self._ble_disabled_at[device_id] = time.time()
         else:
             if ble_name is None:
                 _LOGGER.debug(
@@ -775,7 +795,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 )
 
         # Fallback to MQTT
-        _LOGGER.info(
+        _LOGGER.debug(
             "Sending MQTT command for device %s (DP id=%d)",
             device_id,
             dp.id,
@@ -819,17 +839,15 @@ class WyBotCoordinator(DataUpdateCoordinator):
             # Update the appropriate device/docker
             if group.docker and group.docker.docker_id == device_id:
                 group.docker.dps = {**group.docker.dps, **dp_dict}
-                _LOGGER.info(
-                    "Updated docker %s DPs from BLE response: %s",
+                _LOGGER.debug(
+                    "Updated docker %s DPs from BLE response",
                     device_id,
-                    list(dp_dict.keys()),
                 )
             elif group.device:
                 group.device.dps = {**group.device.dps, **dp_dict}
-                _LOGGER.info(
-                    "Updated device %s DPs from BLE response: %s",
+                _LOGGER.debug(
+                    "Updated device %s DPs from BLE response",
                     device_id,
-                    list(dp_dict.keys()),
                 )
 
             # Record that we got data

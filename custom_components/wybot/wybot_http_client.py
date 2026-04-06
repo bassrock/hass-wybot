@@ -41,6 +41,9 @@ DEFAULT_HEADER = {
 }
 
 
+TOKEN_REFRESH_INTERVAL = 50 * 60  # Proactively refresh token after 50 minutes
+
+
 class WyBotHTTPClient:
     """Client for interacting with the WyBot API."""
 
@@ -49,6 +52,7 @@ class WyBotHTTPClient:
     _password: str
     _username: str
     _session: requests.Session | None = None
+    _token_obtained_at: float = 0.0
 
     def __init__(self, username: str, password: str) -> None:
         """Init the wybot api."""
@@ -82,12 +86,23 @@ class WyBotHTTPClient:
             if login_response and login_response.metadata
             else None
         )
+        if self._token is not None:
+            self._token_obtained_at = time.time()
         return self._token is not None
 
     def _refresh_token_if_needed(self) -> bool:
-        """Refresh token if it's expired or missing."""
+        """Refresh token proactively before expiry or if missing."""
         if self._token is None or self._user_id is None:
             _LOGGER.debug("Token missing, re-authenticating")
+            return self.authenticate()
+        # Proactively refresh before token expires
+        token_age = time.time() - self._token_obtained_at
+        if token_age > TOKEN_REFRESH_INTERVAL:
+            _LOGGER.info(
+                "Token age %.0fs exceeds %ds, proactively refreshing",
+                token_age,
+                TOKEN_REFRESH_INTERVAL,
+            )
             return self.authenticate()
         return True
 
@@ -265,26 +280,30 @@ class WyBotHTTPClient:
             _LOGGER.debug("User ID not set for presence registration")
             return False
 
-        # POST to notification endpoint with userId to register presence
-        try:
-            response = self._session.post(
-                NOTIFICATION_URL,
-                headers={**DEFAULT_HEADER, "Authorization": f"token {self._token}"},
-                json={"userId": self._user_id},
-                allow_redirects=False,
-                timeout=TIMEOUT,
-            )
-            success = response.status_code == 200
-            if success:
-                _LOGGER.debug("Presence registered successfully with cloud server")
-            else:
-                _LOGGER.debug(
-                    "Presence registration response: status=%d, body=%s",
-                    response.status_code,
-                    response.text[:200] if response.text else "empty",
+        # POST to notification endpoint with userId to register presence (with 1 retry)
+        for attempt in range(2):
+            try:
+                response = self._session.post(
+                    NOTIFICATION_URL,
+                    headers={**DEFAULT_HEADER, "Authorization": f"token {self._token}"},
+                    json={"userId": self._user_id},
+                    allow_redirects=False,
+                    timeout=TIMEOUT,
                 )
-            response.close()
-            return success
-        except Exception as err:
-            _LOGGER.debug("Presence registration failed: %s", err)
-            return False
+                success = response.status_code == 200
+                response.close()
+                if success:
+                    _LOGGER.debug("Presence registered successfully")
+                    return True
+                _LOGGER.debug(
+                    "Presence registration failed (attempt %d): status=%d",
+                    attempt + 1,
+                    response.status_code,
+                )
+            except Exception as err:
+                _LOGGER.debug(
+                    "Presence registration error (attempt %d): %s", attempt + 1, err
+                )
+            if attempt == 0:
+                time.sleep(2)
+        return False
