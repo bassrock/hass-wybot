@@ -15,7 +15,7 @@ from homeassistant.components.bluetooth import (
 )
 from homeassistant.core import HomeAssistant
 
-from .const import BLE_COMMAND_HOLD_TIME, BLE_COMMAND_TIMEOUT
+from .const import BLE_COMMAND_HOLD_TIME, BLE_COMMAND_TIMEOUT, DOMAIN
 from .wybot_dp_models import GenericDP
 
 _LOGGER = logging.getLogger(__name__)
@@ -125,6 +125,16 @@ class WyBotBLEClient:
         self._wake_in_progress: bool = False
         self._last_notification_data: bytes | None = None
         self._last_status_data: bytes | None = None  # Status broadcasts (cmd=0x05)
+
+    def _bluetooth_missing_warning_logged(self) -> bool:
+        """Return whether the missing-Bluetooth warning has already been logged."""
+        domain_data = self._hass.data.setdefault(DOMAIN, {})
+        return bool(domain_data.get("_wybot_bluetooth_missing_warning_logged", False))
+
+    def _mark_bluetooth_missing_warning_logged(self) -> None:
+        """Remember that the missing-Bluetooth warning was already logged."""
+        domain_data = self._hass.data.setdefault(DOMAIN, {})
+        domain_data["_wybot_bluetooth_missing_warning_logged"] = True
 
     def _build_binary_command(
         self, cmd: int, dp_id: int, dp_type: int, dp_len: int, dp_value: bytes
@@ -514,7 +524,9 @@ class WyBotBLEClient:
             The BLEDevice if found, None otherwise
         """
         if not self._is_bluetooth_available():
-            _LOGGER.warning("No Bluetooth adapters or proxies available")
+            if not self._bluetooth_missing_warning_logged():
+                _LOGGER.warning("No Bluetooth adapters or proxies available")
+                self._mark_bluetooth_missing_warning_logged()
             return None
 
         _LOGGER.debug("Scanning for WyBot device with BLE name: %s", ble_name)
@@ -1283,7 +1295,8 @@ class WyBotBLEClient:
 
                 ble_device = async_ble_device_from_address(self._hass, mac_address, connectable=True)
                 if not ble_device:
-                    _LOGGER.warning("Device %s not found for status query", ble_name)
+                    if self._is_bluetooth_available():
+                        _LOGGER.warning("Device %s not found for status query", ble_name)
                     return None
 
                 class DirectDevice:
