@@ -78,6 +78,8 @@ class WyBotCoordinator(DataUpdateCoordinator):
 
     # MQTT lazy connection state
     _mqtt_connected: bool = False
+    # Time of the most recent successful MQTT (re)connect (diagnostic)
+    _mqtt_last_connected_at: datetime | None = None
 
     def __init__(
         self,
@@ -130,11 +132,20 @@ class WyBotCoordinator(DataUpdateCoordinator):
     async def _ensure_mqtt_connected(self) -> bool:
         """Lazy connect to MQTT (only when needed as fallback).
 
+        Self-healing: if our flag claims connected but paho disagrees, reset
+        and reconnect. This catches silent drops where on_disconnect didn't
+        fire or paho's auto-retry is wedged.
+
         Returns:
             True if MQTT is connected, False otherwise
         """
-        if self._mqtt_connected and self.wybot_mqtt_client.is_connected():
-            return True
+        if self._mqtt_connected:
+            if self.wybot_mqtt_client.is_connected():
+                return True
+            _LOGGER.warning(
+                "MQTT state drift detected — flag says connected, paho says no; reconnecting"
+            )
+            self._mqtt_connected = False
 
         _LOGGER.info("Connecting to MQTT (fallback mode)")
         try:
@@ -142,6 +153,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 self.wybot_mqtt_client.connect
             )
             self._mqtt_connected = True
+            self._mqtt_last_connected_at = datetime.now(timezone.utc)
             # Subscribe to topics for all known devices
             if self.data:
                 self.subscribe_mqtt(self.data)
@@ -155,12 +167,15 @@ class WyBotCoordinator(DataUpdateCoordinator):
     def _record_mqtt_data_received(self, device_id: str) -> None:
         """Record that MQTT data was received from a device.
 
-        Used for BLE fallback polling logic.
+        Marks data_source="mqtt" only when a real MQTT message arrives, so
+        the diagnostic sensor doesn't flap on every poll cycle that *tried*
+        MQTT fallback.
 
         Args:
             device_id: The device ID that sent data
         """
         self._last_mqtt_data[device_id] = datetime.now(timezone.utc)
+        self._data_source[device_id] = "mqtt"
         _LOGGER.debug("Recorded MQTT data received from device %s", device_id)
 
     def get_last_ble_communication(self, device_id: str) -> datetime | None:
@@ -362,7 +377,6 @@ class WyBotCoordinator(DataUpdateCoordinator):
 
         for device_id in device_ids:
             self.wybot_mqtt_client.ensure_device_sends_statuses(device_id)
-            self._data_source[device_id] = "mqtt"
             self._last_status_query_time = time.time()
 
     async def _maybe_refresh_http_session(self) -> None:
@@ -390,6 +404,15 @@ class WyBotCoordinator(DataUpdateCoordinator):
             self._last_http_refresh_time = current_time
         except Exception as err:
             _LOGGER.debug("HTTP refresh failed (non-critical): %s", err)
+
+        # MQTT keepalive: keep the fallback layer warm so silent drops are
+        # detected within ~60s instead of "the next time BLE happens to fail".
+        # _ensure_mqtt_connected is drift-aware and idempotent when healthy.
+        if self.data:
+            try:
+                await self._ensure_mqtt_connected()
+            except Exception as err:
+                _LOGGER.debug("MQTT keepalive failed (non-critical): %s", err)
 
     async def _async_update_data(self):
         """Fetch data using BLE-primary with MQTT fallback architecture.

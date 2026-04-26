@@ -51,7 +51,24 @@ class WyBotMQTTClient:
         self._on_message = on_message
 
     def connect(self):
-        """Connect to the MQTT server."""
+        """Connect to the MQTT server.
+
+        Self-healing: if our flag says connected but paho's socket is dead
+        (on_disconnect didn't fire, or paho's auto-retry is wedged), force
+        a reconnect via paho's reconnect() — reuses the existing loop thread.
+        """
+        if self._connected and not self._mqtt.is_connected():
+            _LOGGER.warning(
+                "MQTT client flag drift — paho socket is dead; forcing reconnect"
+            )
+            self._connected = False
+            self._connecting = True
+            try:
+                self._mqtt.reconnect()
+            except Exception as err:
+                _LOGGER.error("MQTT reconnect failed: %s", err)
+                self._connecting = False
+            return
         if self._connecting or self._connected:
             _LOGGER.debug("Already connected or connection in progress")
             return

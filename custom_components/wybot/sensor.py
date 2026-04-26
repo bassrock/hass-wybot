@@ -440,4 +440,7 @@ class WyBotDataSourceSensor(WyBotDockSensorBase):
                 attrs["last_ble"] = last_ble.isoformat()
             if last_mqtt:
                 attrs["last_mqtt"] = last_mqtt.isoformat()
+            mqtt_connected_at = self._coordinator._mqtt_last_connected_at
+            if mqtt_connected_at:
+                attrs["mqtt_last_connected_at"] = mqtt_connected_at.isoformat()
         return attrs
