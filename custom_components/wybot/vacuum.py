@@ -10,28 +10,33 @@ from homeassistant.components.vacuum import (
     VacuumActivity,
     VacuumEntityFeature,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.util import dt as dt_util
 
+from . import WyBotConfigEntry
 from .const import DOMAIN, MANUFACTURER
 from .wybot_coordinator import WyBotCoordinator
-from .wybot_dp_models import (
+from wybot.dp_models import (
     Battery,
     BatteryState,
     CleaningMode,
+    GenericDP,
     CleaningStatus,
     CleaningStatusMode,
     Dock,
     DockConnectionStatus,
     DockStatus,
 )
-from .wybot_models import Group
+from wybot.models import Group
 
 _LOGGER = logging.getLogger(__name__)
+
+# Commands are issued over BLE/MQTT; serialize to avoid concurrent device writes.
+PARALLEL_UPDATES = 1
 
 # Force state write every 5 minutes to ensure history is recorded
 FORCE_STATE_WRITE_INTERVAL = timedelta(minutes=5)
@@ -48,12 +53,12 @@ def format_mac(mac: str) -> str:
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: WyBotConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the vacuum platform."""
 
-    coordinator: WyBotCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     async_add_entities(
         WyBotVacuum(idx=deviceId, coordinator=coordinator)
         for deviceId in coordinator.vacuums
@@ -62,6 +67,10 @@ async def async_setup_entry(
 
 class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
     """A wybot vacuum."""
+
+    # Primary entity of the device: take the device's name as the entity name.
+    _attr_has_entity_name = True
+    _attr_name = None
 
     _data: Group
     _idx = str
@@ -198,13 +207,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
         return f"wybot_vacuum_{self._idx}"
 
     @property
-    def name(self) -> str | None:
-        """Return the display name of this device."""
-        if not self._data:
-            return None
-        return self._data.name
-
-    @property
     def activity(self) -> VacuumActivity | None:
         """Return the state of the device."""
         if not self._data:
@@ -274,31 +276,37 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
             | VacuumEntityFeature.STOP
         )
 
+    async def _async_send_command(self, dp: GenericDP, action: str) -> None:
+        """Send a command to the device, raising on failure."""
+        if not self._data:
+            raise HomeAssistantError(
+                f"Cannot {action}: WyBot device is not available"
+            )
+        if not await self.coordinator.async_send_command(self._data, dp):
+            raise HomeAssistantError(
+                f"Failed to {action} via BLE or MQTT"
+            )
+
     async def async_set_fan_speed(self, fan_speed: str) -> None:
         """Set the fan speed of the vacuum cleaner."""
-        if not self._data:
-            return
-        cleaning_mode = CleaningMode(mode=fan_speed)
-        await self.coordinator.async_send_command(self._data, cleaning_mode)
+        await self._async_send_command(
+            CleaningMode(mode=fan_speed), "set the cleaning mode"
+        )
 
     async def async_stop(self) -> None:
         """Stop the vacuum cleaner."""
-        if not self._data:
-            return
-        cleaning_status = CleaningStatus(status=CleaningStatusMode.STOPPED)
-        await self.coordinator.async_send_command(self._data, cleaning_status)
+        await self._async_send_command(
+            CleaningStatus(status=CleaningStatusMode.STOPPED), "stop the cleaner"
+        )
 
     async def async_start(self) -> None:
         """Start the vacuum cleaner."""
-        if not self._data:
-            return
-        cleaning_status = CleaningStatus(status=CleaningStatusMode.CLEANING)
-        await self.coordinator.async_send_command(self._data, cleaning_status)
+        await self._async_send_command(
+            CleaningStatus(status=CleaningStatusMode.CLEANING), "start the cleaner"
+        )
 
     async def async_return_to_base(self) -> None:
         """Return the vacuum cleaner to the dock."""
-        if not self._data:
-            return
-        await self.coordinator.async_send_command(
-            self._data, Dock(status=DockStatus.RETURNING)
+        await self._async_send_command(
+            Dock(status=DockStatus.RETURNING), "return the cleaner to base"
         )

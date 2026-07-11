@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import logging
 from typing import Any
 
@@ -20,7 +21,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import format_mac
 
 from .const import CONF_WIFI_PASSWORD, CONF_WIFI_SSID, DOMAIN
-from .wybot_http_client import WyBotHTTPClient
+from wybot import WybotAuthError, WybotConnectionError
+from wybot import WyBotHTTPClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,13 +47,16 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     """
     client = WyBotHTTPClient(data[CONF_USERNAME], data[CONF_PASSWORD])
 
-    authed = await hass.async_add_executor_job(client.authenticate)
+    try:
+        await hass.async_add_executor_job(client.authenticate)
+    except WybotAuthError as err:
+        raise InvalidAuth from err
+    except WybotConnectionError as err:
+        raise CannotConnect from err
 
-    if not authed:
-        raise InvalidAuth
-
-    # Return info that you want to store in the config entry.
-    return {"title": data[CONF_USERNAME]}
+    # Return info that you want to store in the config entry. The user_id
+    # uniquely identifies the WyBot account and is used as the entry unique_id.
+    return {"title": data[CONF_USERNAME], "user_id": client.user_id}
 
 
 class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -122,6 +127,11 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
                     _LOGGER.exception("Unexpected exception")
                     errors["base"] = "unknown"
                 else:
+                    # Key the entry on the WyBot account so the same account
+                    # cannot be configured twice (unique-config-entry).
+                    await self.async_set_unique_id(info["user_id"])
+                    self._abort_if_unique_id_configured()
+
                     # Include discovered device info if available
                     entry_data = dict(user_input)
                     if self._discovery_info:
@@ -135,6 +145,52 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+        )
+
+    async def async_step_reauth(
+        self, entry_data: Mapping[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle re-authentication when stored credentials become invalid."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Confirm re-authentication by collecting a new password."""
+        errors: dict[str, str] = {}
+        reauth_entry = self._get_reauth_entry()
+
+        if user_input is not None:
+            data = {
+                CONF_USERNAME: reauth_entry.data[CONF_USERNAME],
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+            }
+            try:
+                info = await validate_input(self.hass, data)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                # Guard against re-authenticating with a different account, but
+                # only when the existing entry already carries a unique_id.
+                if reauth_entry.unique_id is not None:
+                    await self.async_set_unique_id(info["user_id"])
+                    self._abort_if_unique_id_mismatch(reason="wrong_account")
+                return self.async_update_reload_and_abort(
+                    reauth_entry,
+                    unique_id=info["user_id"],
+                    data_updates={CONF_PASSWORD: user_input[CONF_PASSWORD]},
+                )
+
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            description_placeholders={"username": reauth_entry.data[CONF_USERNAME]},
+            errors=errors,
         )
 
 

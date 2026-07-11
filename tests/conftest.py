@@ -1,64 +1,29 @@
 """Fixtures and helpers for hass-wybot tests.
 
-Uses sys.path manipulation to import model files directly without
-triggering the HA-dependent __init__.py.
+Tests run against the real Home Assistant test harness
+(``pytest-homeassistant-custom-component``); the ``wybot`` custom integration is
+loaded via ``enable_custom_integrations``.
 """
 
-import importlib
+from __future__ import annotations
+
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock
 
 import pytest
 
-# Add the custom_components/wybot directory to sys.path so we can import
-# the model modules DIRECTLY (not via the packages that need HA)
-_WYBOT_DIR = Path(__file__).parent.parent / "custom_components" / "wybot"
+# Ensure the repo root is importable so ``custom_components.wybot`` resolves.
+_REPO_ROOT = Path(__file__).parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-# We need to prevent the __init__.py from being loaded when we import
-# submodules. We do this by registering mock parent packages.
-# HA core
-sys.modules.setdefault("homeassistant", MagicMock())
-sys.modules.setdefault("homeassistant.core", MagicMock())
-sys.modules.setdefault("homeassistant.config_entries", MagicMock())
-sys.modules.setdefault("homeassistant.const", MagicMock())
-sys.modules.setdefault("homeassistant.helpers", MagicMock())
-sys.modules.setdefault("homeassistant.helpers.update_coordinator", MagicMock())
-sys.modules.setdefault("homeassistant.helpers.config_validation", MagicMock())
-sys.modules.setdefault("homeassistant.helpers.device_registry", MagicMock())
-sys.modules.setdefault("homeassistant.helpers.entity_platform", MagicMock())
-sys.modules.setdefault("homeassistant.exceptions", MagicMock())
-sys.modules.setdefault("homeassistant.components.bluetooth", MagicMock())
-sys.modules.setdefault("homeassistant.components.vacuum", MagicMock())
-sys.modules.setdefault("homeassistant.components.sensor", MagicMock())
-sys.modules.setdefault("homeassistant.components.binary_sensor", MagicMock())
-sys.modules.setdefault("homeassistant.components.button", MagicMock())
-sys.modules.setdefault("homeassistant.util", MagicMock())
-sys.modules.setdefault("homeassistant.util.dt", MagicMock())
+pytest_plugins = ["pytest_homeassistant_custom_component"]
 
-# voluptuous
-sys.modules.setdefault("voluptuous", MagicMock())
 
-# BLE libraries
-sys.modules.setdefault("bleak", MagicMock())
-sys.modules.setdefault("bleak.backends", MagicMock())
-sys.modules.setdefault("bleak.backends.device", MagicMock())
-sys.modules.setdefault("bleak_retry_connector", MagicMock())
-
-# MQTT library
-sys.modules.setdefault("paho", MagicMock())
-sys.modules.setdefault("paho.mqtt", MagicMock())
-sys.modules.setdefault("paho.mqtt.client", MagicMock())
-
-# HTTP library
-sys.modules.setdefault("requests", MagicMock())
-sys.modules.setdefault("requests.adapters", MagicMock())
-sys.modules.setdefault("urllib3", MagicMock())
-sys.modules.setdefault("urllib3.util", MagicMock())
-sys.modules.setdefault("urllib3.util.retry", MagicMock())
-
-# Now ensure the wybot package directory is importable
-sys.path.insert(0, str(_WYBOT_DIR.parent.parent))
+@pytest.fixture(autouse=True)
+def auto_enable_custom_integrations(enable_custom_integrations):
+    """Enable loading of the wybot custom integration in every test."""
+    yield
 
 
 @pytest.fixture

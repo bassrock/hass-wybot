@@ -3,26 +3,30 @@
 import logging
 
 from homeassistant.components.button import ButtonEntity
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import WyBotConfigEntry
 from .const import CONF_WIFI_PASSWORD, CONF_WIFI_SSID, DOMAIN
 from .wybot_coordinator import WyBotCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Commands are issued over BLE; serialize to avoid concurrent writes to a device.
+PARALLEL_UPDATES = 1
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: WyBotConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up WyBot buttons from a config entry."""
-    coordinator: WyBotCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = config_entry.runtime_data
 
     entities: list[ButtonEntity] = []
 
@@ -82,6 +86,16 @@ class WyBotWifiReconfigureButton(CoordinatorEntity[WyBotCoordinator], ButtonEnti
         self._attr_icon = "mdi:wifi-cog"
 
     @property
+    def available(self) -> bool:
+        """Return True when the coordinator is available and the dock exists."""
+        group = self.coordinator.data.get(self._idx)
+        return (
+            self.coordinator.available
+            and group is not None
+            and group.docker is not None
+        )
+
+    @property
     def device_info(self) -> DeviceInfo:
         """Return device information - associates with the dock device."""
         return DeviceInfo(
@@ -98,11 +112,8 @@ class WyBotWifiReconfigureButton(CoordinatorEntity[WyBotCoordinator], ButtonEnti
         success = await self.coordinator.wybot_ble_client.configure_wifi(
             self._ble_name, self._wifi_ssid, self._wifi_password
         )
-        if success:
-            _LOGGER.info(
-                "Successfully sent WiFi credentials to dock %s", self._ble_name
+        if not success:
+            raise HomeAssistantError(
+                f"Failed to send WiFi credentials to dock {self._ble_name} via BLE"
             )
-        else:
-            _LOGGER.warning(
-                "Failed to send WiFi credentials to dock %s via BLE", self._ble_name
-            )
+        _LOGGER.info("Successfully sent WiFi credentials to dock %s", self._ble_name)

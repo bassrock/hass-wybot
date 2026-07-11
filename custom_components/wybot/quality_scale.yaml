@@ -1,0 +1,68 @@
+# Progress toward the Home Assistant Integration Quality Scale (target: Silver).
+# https://developers.home-assistant.io/docs/core/integration-quality-scale/
+rules:
+  # --- Bronze ---
+  action-setup:
+    status: exempt
+    comment: The integration does not register any global service actions.
+  appropriate-polling:
+    status: done
+    comment: DataUpdateCoordinator polls every 30 seconds (BLE/MQTT/HTTP).
+  brands:
+    status: todo
+    comment: Submit logo/icon assets to home-assistant/brands (human follow-up).
+  common-modules: done
+  config-flow-test-coverage: done
+  config-flow: done
+  dependency-transparency:
+    status: done
+    comment: >-
+      The WyBot client is the pywybot PyPI package (github.com/bassrock/pywybot),
+      pinned in manifest requirements.
+  docs-actions:
+    status: exempt
+    comment: No service actions are provided.
+  docs-high-level-description: done
+  docs-installation-instructions:
+    status: todo
+    comment: Expand README installation instructions.
+  docs-removal-instructions:
+    status: todo
+    comment: Add removal instructions to the README.
+  docs-triggers:
+    status: exempt
+    comment: The integration provides no triggers.
+  docs-conditions:
+    status: exempt
+    comment: The integration provides no conditions.
+  entity-event-setup: done
+  entity-unique-id: done
+  has-entity-name: done
+  runtime-data: done
+  test-before-configure: done
+  test-before-setup: done
+  unique-config-entry: done
+
+  # --- Silver ---
+  action-exceptions:
+    status: done
+    comment: Vacuum and button entity actions raise HomeAssistantError on failure.
+  config-entry-unloading: done
+  docs-configuration-parameters:
+    status: todo
+    comment: Document all options-flow parameters in the README.
+  docs-installation-parameters:
+    status: todo
+    comment: Document all config-flow parameters in the README.
+  entity-unavailable: done
+  integration-owner: done
+  log-when-unavailable:
+    status: done
+    comment: >-
+      _async_update_data raises UpdateFailed when no data is available, so the
+      DataUpdateCoordinator logs once on failure and once on recovery.
+  parallel-updates: done
+  reauthentication-flow: done
+  test-coverage:
+    status: done
+    comment: 99% coverage on the HA test harness (pytest-homeassistant-custom-component).

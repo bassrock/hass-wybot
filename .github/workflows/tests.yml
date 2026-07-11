@@ -22,7 +22,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install pytest pydantic
+        run: pip install -r requirements_test.txt
 
       - name: Run tests
-        run: python -m pytest tests/ -v
+        run: >-
+          python -m pytest tests/ -v
+          --cov=custom_components/wybot
+          --cov-report=term-missing
+          --cov-fail-under=95

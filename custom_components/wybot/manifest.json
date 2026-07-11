@@ -14,16 +14,15 @@
     "bluetooth_adapters"
   ],
   "documentation": "https://github.com/bassrock/hass-wybot",
-  "homekit": {},
+  "integration_type": "hub",
   "iot_class": "cloud_push",
-  "requirements": [
-    "paho-mqtt",
-    "bleak"
-  ],
-  "ssdp": [],
-  "zeroconf": [],
-  "version": "2.3.2",
+  "issue_tracker": "https://github.com/bassrock/hass-wybot/issues",
   "loggers": [
-    "custom_components.wybot"
-  ]
+    "custom_components.wybot",
+    "wybot"
+  ],
+  "requirements": [
+    "pywybot==0.1.0"
+  ],
+  "version": "3.0.0"
 }

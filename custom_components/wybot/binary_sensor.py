@@ -8,18 +8,21 @@ from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
     BinarySensorEntity,
 )
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import WyBotConfigEntry
 from .const import DOMAIN, MANUFACTURER
 from .wybot_coordinator import WyBotCoordinator
-from .wybot_dp_models import Battery, BatteryState, DockConnectionStatus, SolarStatus
-from .wybot_models import Group
+from wybot.dp_models import Battery, BatteryState, DockConnectionStatus, SolarStatus
+from wybot.models import Group
 
 _LOGGER = logging.getLogger(__name__)
+
+# Read-only entities driven by the DataUpdateCoordinator.
+PARALLEL_UPDATES = 0
 
 
 def format_mac(mac: str) -> str:
@@ -33,11 +36,11 @@ def format_mac(mac: str) -> str:
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    entry: ConfigEntry,
+    entry: WyBotConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the WyBot binary sensor platform."""
-    coordinator: WyBotCoordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
 
     entities: list[BinarySensorEntity] = []
 
