@@ -87,9 +87,12 @@ def make_coordinator(hass: HomeAssistant, **entry_data) -> WyBotCoordinator:
     coord = WyBotCoordinator(hass, MagicMock(), entry)
 
     http = MagicMock()
-    http.get_indexed_current_grouped_devices.return_value = {}
-    http.register_presence.return_value = None
-    http.get_devices_and_status.return_value = None
+    http.get_indexed_current_grouped_devices = AsyncMock(return_value={})
+    http.register_presence = AsyncMock(return_value=None)
+    http.get_devices_and_status = AsyncMock(return_value=None)
+    http.authenticate = AsyncMock(return_value=True)
+    http.login = AsyncMock(return_value=None)
+    http.close = AsyncMock(return_value=None)
     coord.wybot_http_client = http
 
     ble = MagicMock()
@@ -102,7 +105,13 @@ def make_coordinator(hass: HomeAssistant, **entry_data) -> WyBotCoordinator:
     coord.wybot_ble_client = ble
 
     mqtt = MagicMock()
-    mqtt.is_connected.return_value = True
+    mqtt.is_connected = MagicMock(return_value=True)
+    mqtt.connect = AsyncMock(return_value=None)
+    mqtt.disconnect = AsyncMock(return_value=None)
+    mqtt.subscribe_for_device = AsyncMock(return_value=None)
+    mqtt.ensure_device_sends_statuses = AsyncMock(return_value=None)
+    mqtt.send_query_command_for_device = AsyncMock(return_value=None)
+    mqtt.send_write_command_for_device = AsyncMock(return_value=None)
     coord.wybot_mqtt_client = mqtt
 
     return coord
@@ -371,7 +380,7 @@ async def test_subscribe_mqtt(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
     data = {GROUP_ID: make_group(), "g2": make_group(with_docker=False)}
     data["g2"].device.dps = {}
-    coord.subscribe_mqtt(data)
+    await coord.subscribe_mqtt(data)
     # 2 devices + 1 docker
     assert coord.wybot_mqtt_client.subscribe_for_device.call_count == 3
 
@@ -380,7 +389,7 @@ async def test_query_all_device_status(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
     coord.data = {GROUP_ID: make_group()}
     coord.wybot_mqtt_client.is_connected.return_value = True
-    coord.query_all_device_status()
+    await coord.query_all_device_status()
     assert coord.wybot_mqtt_client.ensure_device_sends_statuses.call_count == 2
 
 
@@ -388,7 +397,7 @@ async def test_query_all_device_status_disconnected(hass: HomeAssistant) -> None
     coord = make_coordinator(hass)
     coord.data = {GROUP_ID: make_group()}
     coord.wybot_mqtt_client.is_connected.return_value = False
-    coord.query_all_device_status()
+    await coord.query_all_device_status()
     coord.wybot_mqtt_client.ensure_device_sends_statuses.assert_not_called()
 
 
@@ -396,7 +405,7 @@ async def test_send_write_command(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
     group = make_group()
     dp = group.device.dps["0"]
-    coord.send_write_command(group, dp)
+    await coord.send_write_command(group, dp)
     # once for device, once for docker
     assert coord.wybot_mqtt_client.send_write_command_for_device.call_count == 2
 

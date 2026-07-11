@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from typing import Any, cast
 
 from homeassistant.components.binary_sensor import (
     BinarySensorDeviceClass,
@@ -64,7 +65,7 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
-class WyBotBinarySensorBase(BinarySensorEntity, CoordinatorEntity):
+class WyBotBinarySensorBase(BinarySensorEntity, CoordinatorEntity[WyBotCoordinator]):
     """Base class for WyBot binary sensors."""
 
     _data: Group | None
@@ -126,14 +127,18 @@ class WyBotBinarySensorBase(BinarySensorEntity, CoordinatorEntity):
         via_device = None
         if self._data and self._data.docker:
             via_device = (DOMAIN, f"{self._idx}_dock")
-        return DeviceInfo(
-            identifiers={(DOMAIN, str(self._idx))},
-            name=self._get_robot_name(),
-            manufacturer=MANUFACTURER,
-            model=self._get_robot_model(),
-            connections=connections if connections else None,
-            via_device=via_device,
-        )
+        info_kwargs: dict[str, Any] = {
+            "identifiers": {(DOMAIN, str(self._idx))},
+            "name": self._get_robot_name(),
+            "manufacturer": MANUFACTURER,
+            "model": self._get_robot_model(),
+            "connections": connections if connections else None,
+            "via_device": via_device,
+        }
+        # HA's DeviceInfo TypedDict types connections/via_device as
+        # non-optional, but this integration stores None to mean "unset"
+        # (preserved for compatibility); cast the loosely-typed kwargs.
+        return cast(DeviceInfo, info_kwargs)
 
 
 class WyBotRobotChargingBinarySensor(WyBotBinarySensorBase):
@@ -163,9 +168,9 @@ class WyBotRobotChargingBinarySensor(WyBotBinarySensorBase):
         return battery.charge_state == BatteryState.CHARGING
 
     @property
-    def extra_state_attributes(self) -> dict:
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        attrs = {}
+        attrs: dict[str, Any] = {}
         if self._data:
             battery = self._data.get_dp(Battery)
             if battery is not None:
@@ -195,13 +200,17 @@ class WyBotDockBinarySensorBase(WyBotBinarySensorBase):
                 connections.add(
                     (CONNECTION_BLUETOOTH, format_mac(self._data.docker.ble_name))
                 )
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{self._idx}_dock")},
-            name=dock_name,
-            manufacturer=MANUFACTURER,
-            model=dock_model,
-            connections=connections if connections else None,
-        )
+        info_kwargs: dict[str, Any] = {
+            "identifiers": {(DOMAIN, f"{self._idx}_dock")},
+            "name": dock_name,
+            "manufacturer": MANUFACTURER,
+            "model": dock_model,
+            "connections": connections if connections else None,
+        }
+        # HA's DeviceInfo TypedDict types connections as non-optional, but this
+        # integration stores None to mean "unset" (preserved for
+        # compatibility); cast the loosely-typed kwargs.
+        return cast(DeviceInfo, info_kwargs)
 
 
 class WyBotDockChargingBinarySensor(WyBotDockBinarySensorBase):
@@ -231,9 +240,9 @@ class WyBotDockChargingBinarySensor(WyBotDockBinarySensorBase):
         return solar_status.is_charging
 
     @property
-    def extra_state_attributes(self) -> dict:
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        attrs = {}
+        attrs: dict[str, Any] = {}
         if self._data:
             # Add dock connection status
             dock_status = self._data.get_dp(DockConnectionStatus)

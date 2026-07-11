@@ -18,11 +18,12 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.device_registry import format_mac
 
+from wybot import WyBotHTTPClient, WybotAuthError, WybotConnectionError
+
 from .const import CONF_WIFI_PASSWORD, CONF_WIFI_SSID, DOMAIN
-from wybot import WybotAuthError, WybotConnectionError
-from wybot import WyBotHTTPClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -45,10 +46,14 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
-    client = WyBotHTTPClient(data[CONF_USERNAME], data[CONF_PASSWORD])
+    client = WyBotHTTPClient(
+        data[CONF_USERNAME],
+        data[CONF_PASSWORD],
+        session=async_get_clientsession(hass),
+    )
 
     try:
-        await hass.async_add_executor_job(client.authenticate)
+        await client.authenticate()
     except WybotAuthError as err:
         raise InvalidAuth from err
     except WybotConnectionError as err:

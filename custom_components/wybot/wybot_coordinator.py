@@ -2,20 +2,18 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import logging
 import time
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from wybot import (
-    WyBotBLEClient,
-    WyBotHTTPClient,
-    WyBotMQTTClient,
-    WybotAuthError,
-    WybotConnectionError,
-)
+from wybot.ble_client import WyBotBLEClient
 from wybot.dp_models import GenericDP
+from wybot.exceptions import WybotAuthError, WybotConnectionError
+from wybot.http_client import WyBotHTTPClient
 from wybot.models import Command, Device, Docker, Group
+from wybot.mqtt_client import WyBotMQTTClient
 
 from .bluetooth_adapter import HomeAssistantBluetoothAdapter
 from .const import (
@@ -135,13 +133,11 @@ class WyBotCoordinator(DataUpdateCoordinator):
         if ssid:
             _LOGGER.debug("WiFi credentials updated for SSID: %s", ssid)
 
-    async def async_stop(self):
+    async def async_stop(self) -> None:
         """Stop the MQTT client."""
         if self._mqtt_connected:
             _LOGGER.info("Stopping MQTT client")
-            await self.hass.async_add_executor_job(
-                self.wybot_mqtt_client.disconnect
-            )
+            await self.wybot_mqtt_client.disconnect()
             self._mqtt_connected = False
 
     async def _ensure_mqtt_connected(self) -> bool:
@@ -164,14 +160,12 @@ class WyBotCoordinator(DataUpdateCoordinator):
 
         _LOGGER.info("Connecting to MQTT (fallback mode)")
         try:
-            await self.hass.async_add_executor_job(
-                self.wybot_mqtt_client.connect
-            )
+            await self.wybot_mqtt_client.connect()
             self._mqtt_connected = True
             self._mqtt_last_connected_at = datetime.now(timezone.utc)
             # Subscribe to topics for all known devices
             if self.data:
-                self.subscribe_mqtt(self.data)
+                await self.subscribe_mqtt(self.data)
             _LOGGER.info("MQTT connected successfully (fallback ready)")
             return True
         except Exception as err:
@@ -255,7 +249,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
         return None, None
 
     def _update_device_dps_from_ble(
-        self, group: Group, device_id: str, dps: list[dict]
+        self, group: Group, device_id: str, dps: list[dict[str, Any]]
     ) -> None:
         """Update device DPs from BLE response.
 
@@ -268,9 +262,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
             return
 
         # Create a command-like structure to reuse existing DP processing
-        cmd_data = {"cmd": 5, "ts": 0, "dp": dps}
+        cmd_data: dict[str, Any] = {"cmd": 5, "ts": 0, "dp": dps}
         command = Command(**cmd_data)
-        dp_dict = command.get_dps_as_keyed_dict()
+        dp_dict: dict[str, Any] = command.get_dps_as_keyed_dict()
 
         if group.docker and group.docker.docker_id == device_id:
             group.docker.dps = {**group.docker.dps, **dp_dict}
@@ -391,7 +385,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
         )
 
         for device_id in device_ids:
-            self.wybot_mqtt_client.ensure_device_sends_statuses(device_id)
+            await self.wybot_mqtt_client.ensure_device_sends_statuses(device_id)
             self._last_status_query_time = time.time()
 
     async def _maybe_refresh_http_session(self) -> None:
@@ -410,12 +404,8 @@ class WyBotCoordinator(DataUpdateCoordinator):
 
         _LOGGER.debug("Refreshing HTTP session to keep MQTT fallback ready")
         try:
-            await self.hass.async_add_executor_job(
-                self.wybot_http_client.register_presence
-            )
-            await self.hass.async_add_executor_job(
-                self.wybot_http_client.get_devices_and_status
-            )
+            await self.wybot_http_client.register_presence()
+            await self.wybot_http_client.get_devices_and_status()
             self._last_http_refresh_time = current_time
         except WybotAuthError:
             # Credentials became invalid during normal operation — let this
@@ -433,7 +423,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
             except Exception as err:
                 _LOGGER.debug("MQTT keepalive failed (non-critical): %s", err)
 
-    async def _async_update_data(self):
+    async def _async_update_data(self) -> dict[str, Group]:
         """Fetch data using BLE-primary with MQTT fallback architecture.
 
         Priority:
@@ -447,9 +437,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 if not self.initial_load:
                     self.initial_load = True
                     _LOGGER.info("Initial load: fetching device list from HTTP API")
-                    await self.hass.async_add_executor_job(
-                        self.wybot_http_client.register_presence
-                    )
+                    await self.wybot_http_client.register_presence()
                     await self.http_refresh_data()
 
                     # Log device BLE names for debugging
@@ -509,7 +497,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
             self._connection_available = False
             raise UpdateFailed(f"Error communicating with API: {err}") from err
 
-    async def http_refresh_data(self):
+    async def http_refresh_data(self) -> None:
         """Refresh data from HTTP API with retry logic.
 
         Note: Does not subscribe to MQTT here since MQTT uses lazy connection.
@@ -520,9 +508,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
 
         for attempt in range(MAX_HTTP_RETRIES):
             try:
-                data = await self.hass.async_add_executor_job(
-                    self.wybot_http_client.get_indexed_current_grouped_devices
-                )
+                data = await self.wybot_http_client.get_indexed_current_grouped_devices()
                 if data:
                     self.data = data
                     # Note: MQTT subscription deferred to _ensure_mqtt_connected()
@@ -572,14 +558,16 @@ class WyBotCoordinator(DataUpdateCoordinator):
             raise ConfigEntryNotReady("Failed to connect to WyBot API") from last_error
         raise UpdateFailed("Failed to refresh data after retries")
 
-    def subscribe_mqtt(self, data: dict[str, Group]):
+    async def subscribe_mqtt(self, data: dict[str, Group]) -> None:
         """Subscribe to MQTT updates for a device."""
         for [deviceId, device] in data.items():
-            self.wybot_mqtt_client.subscribe_for_device(device.device.device_id)
+            await self.wybot_mqtt_client.subscribe_for_device(device.device.device_id)
             if device.docker is not None:
-                self.wybot_mqtt_client.subscribe_for_device(device.docker.docker_id)
+                await self.wybot_mqtt_client.subscribe_for_device(
+                    device.docker.docker_id
+                )
 
-    def on_message(self, topic: str, data: dict[str, any]):
+    def on_message(self, topic: str, data: dict[str, Any]) -> None:
         """Handle a message from MQTT."""
         data_updated = False
 
@@ -611,7 +599,11 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 if is_online:
                     self._online_devices.add(deviceId)
                     _LOGGER.debug("Device %s came online, querying status", deviceId)
-                    self.wybot_mqtt_client.ensure_device_sends_statuses(deviceId)
+                    # on_message runs in the event loop (from the MQTT listen
+                    # task) but is sync; schedule the async status query.
+                    self.hass.async_create_task(
+                        self.wybot_mqtt_client.ensure_device_sends_statuses(deviceId)
+                    )
                 else:
                     self._online_devices.discard(deviceId)
             # Will messages indicate device availability changes, always trigger update
@@ -640,6 +632,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 return
 
             group = self.get_group(deviceId)
+            incoming_dps: dict[str, Any] = command_response.get_dps_as_keyed_dict()
             if (
                 group is not None
                 and group.docker is not None
@@ -647,7 +640,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
             ):
                 group.docker.dps = {
                     **group.docker.dps,
-                    **command_response.get_dps_as_keyed_dict(),
+                    **incoming_dps,
                 }
                 _LOGGER.debug(
                     "Updated docker %s DPs from send_transparent_data",
@@ -657,7 +650,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
             elif group is not None and group.device is not None:
                 group.device.dps = {
                     **group.device.dps,
-                    **command_response.get_dps_as_keyed_dict(),
+                    **incoming_dps,
                 }
                 _LOGGER.debug(
                     "Updated device %s DPs from send_transparent_data",
@@ -684,13 +677,14 @@ class WyBotCoordinator(DataUpdateCoordinator):
             # Update device DPs with the received data (cmd=4 contains actual values)
             group = self.get_group(deviceId)
             if group is not None:
+                cmd_dps: dict[str, Any] = command_response.get_dps_as_keyed_dict()
                 if (
                     group.docker is not None
                     and group.docker.docker_id == deviceId
                 ):
                     group.docker.dps = {
                         **group.docker.dps,
-                        **command_response.get_dps_as_keyed_dict(),
+                        **cmd_dps,
                     }
                     _LOGGER.debug(
                         "Updated docker %s DPs from cmd_data",
@@ -699,7 +693,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 elif group.device is not None:
                     group.device.dps = {
                         **group.device.dps,
-                        **command_response.get_dps_as_keyed_dict(),
+                        **cmd_dps,
                     }
                     _LOGGER.debug(
                         "Updated device %s DPs from cmd_data",
@@ -730,14 +724,14 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 return device
         return None
 
-    def send_write_command(self, group: Group, dp: GenericDP):
+    async def send_write_command(self, group: Group, dp: GenericDP) -> None:
         """Send a command to a group. First send to the device, then send to the docker if it exists."""
         command = {"ts": int(time.time()), "cmd": 4, "dp": [dp.dict()]}
-        self.wybot_mqtt_client.send_write_command_for_device(
+        await self.wybot_mqtt_client.send_write_command_for_device(
             group.device.device_id, command
         )
         if group.docker is not None:
-            self.wybot_mqtt_client.send_write_command_for_device(
+            await self.wybot_mqtt_client.send_write_command_for_device(
                 group.docker.docker_id, command
             )
 
@@ -774,6 +768,8 @@ class WyBotCoordinator(DataUpdateCoordinator):
         )
 
         if ble_enabled:
+            # ble_enabled is only True when ble_name is not None; narrow for typing.
+            assert ble_name is not None
             _LOGGER.debug(
                 "Attempting BLE-first command for device %s via %s (DP id=%d)",
                 device_id,
@@ -852,7 +848,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
             device_id,
             dp.id,
         )
-        self.send_write_command(group, dp)
+        await self.send_write_command(group, dp)
         return True  # MQTT is fire-and-forget, assume success
 
     def reset_ble_command_failures(self, device_id: str | None = None) -> None:
@@ -868,7 +864,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
             self._ble_command_failures.clear()
             _LOGGER.info("Reset BLE command failures for all devices")
 
-    def _update_from_ble_dps(self, group: Group, device_id: str, dps: list[dict]) -> None:
+    def _update_from_ble_dps(
+        self, group: Group, device_id: str, dps: list[dict[str, Any]]
+    ) -> None:
         """Update device state from BLE response DPs.
 
         Args:
@@ -883,10 +881,10 @@ class WyBotCoordinator(DataUpdateCoordinator):
             from wybot.models import Command
 
             # Create a command-like structure to reuse existing DP processing
-            cmd_data = {"cmd": 5, "ts": 0, "dp": dps}
+            cmd_data: dict[str, Any] = {"cmd": 5, "ts": 0, "dp": dps}
             command = Command(**cmd_data)
 
-            dp_dict = command.get_dps_as_keyed_dict()
+            dp_dict: dict[str, Any] = command.get_dps_as_keyed_dict()
 
             # Update the appropriate device/docker
             if group.docker and group.docker.docker_id == device_id:
@@ -911,16 +909,16 @@ class WyBotCoordinator(DataUpdateCoordinator):
         except Exception as err:
             _LOGGER.warning("Error updating state from BLE DPs: %s", err)
 
-    def query_all_device_status(self) -> None:
+    async def query_all_device_status(self) -> None:
         """Query status for all devices by sending individual DP queries."""
         for device_id in self.data.keys():
             group = self.data[device_id]
             if self.wybot_mqtt_client.is_connected():
-                self.wybot_mqtt_client.ensure_device_sends_statuses(
+                await self.wybot_mqtt_client.ensure_device_sends_statuses(
                     group.device.device_id
                 )
                 if group.docker is not None:
-                    self.wybot_mqtt_client.ensure_device_sends_statuses(
+                    await self.wybot_mqtt_client.ensure_device_sends_statuses(
                         group.docker.docker_id
                     )
 

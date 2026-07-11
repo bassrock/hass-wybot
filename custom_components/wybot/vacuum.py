@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 import logging
+from typing import Any, cast
 
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
@@ -75,15 +76,15 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
-class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
+class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
     """A wybot vacuum."""
 
     # Primary entity of the device: take the device's name as the entity name.
     _attr_has_entity_name = True
     _attr_name = None
 
-    _data: Group
-    _idx = str
+    _data: Group | None
+    _idx: str
     _coordinator: WyBotCoordinator
     _last_state_write: datetime | None = None
     _last_availability: bool | None = None
@@ -202,14 +203,18 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
             # If dock exists, robot connects via dock
             if self._data.docker:
                 via_device = (DOMAIN, f"{self._idx}_dock")
-        return DeviceInfo(
-            identifiers={(DOMAIN, str(self._idx))},
-            name=name,
-            manufacturer=MANUFACTURER,
-            model=model,
-            connections=connections if connections else None,
-            via_device=via_device,
-        )
+        info_kwargs: dict[str, Any] = {
+            "identifiers": {(DOMAIN, str(self._idx))},
+            "name": name,
+            "manufacturer": MANUFACTURER,
+            "model": model,
+            "connections": connections if connections else None,
+            "via_device": via_device,
+        }
+        # HA's DeviceInfo TypedDict types connections/via_device as
+        # non-optional, but this integration stores None to mean "unset"
+        # (preserved for compatibility); cast the loosely-typed kwargs.
+        return cast(DeviceInfo, info_kwargs)
 
     @property
     def unique_id(self) -> str | None:
@@ -297,11 +302,11 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
                 translation_domain=DOMAIN, translation_key="cannot_send_command"
             )
 
-    async def async_set_fan_speed(self, fan_speed: str) -> None:
+    async def async_set_fan_speed(self, fan_speed: str, **kwargs: Any) -> None:
         """Set the fan speed of the vacuum cleaner."""
         await self._async_send_command(CleaningMode(mode=fan_speed))
 
-    async def async_stop(self) -> None:
+    async def async_stop(self, **kwargs: Any) -> None:
         """Stop the vacuum cleaner."""
         await self._async_send_command(
             CleaningStatus(status=CleaningStatusMode.STOPPED)
@@ -313,6 +318,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
             CleaningStatus(status=CleaningStatusMode.CLEANING)
         )
 
-    async def async_return_to_base(self) -> None:
+    async def async_return_to_base(self, **kwargs: Any) -> None:
         """Return the vacuum cleaner to the dock."""
         await self._async_send_command(Dock(status=DockStatus.RETURNING))

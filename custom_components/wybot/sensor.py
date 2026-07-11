@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 import logging
+from typing import Any, cast
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -78,7 +79,7 @@ async def async_setup_entry(
     entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
-class WyBotSensorBase(SensorEntity, CoordinatorEntity):
+class WyBotSensorBase(SensorEntity, CoordinatorEntity[WyBotCoordinator]):
     """Base class for WyBot sensors."""
 
     _data: Group | None
@@ -140,14 +141,18 @@ class WyBotSensorBase(SensorEntity, CoordinatorEntity):
         via_device = None
         if self._data and self._data.docker:
             via_device = (DOMAIN, f"{self._idx}_dock")
-        return DeviceInfo(
-            identifiers={(DOMAIN, str(self._idx))},
-            name=self._get_robot_name(),
-            manufacturer=MANUFACTURER,
-            model=self._get_robot_model(),
-            connections=connections if connections else None,
-            via_device=via_device,
-        )
+        info_kwargs: dict[str, Any] = {
+            "identifiers": {(DOMAIN, str(self._idx))},
+            "name": self._get_robot_name(),
+            "manufacturer": MANUFACTURER,
+            "model": self._get_robot_model(),
+            "connections": connections if connections else None,
+            "via_device": via_device,
+        }
+        # HA's DeviceInfo TypedDict types connections/via_device as
+        # non-optional, but this integration stores None to mean "unset"
+        # (preserved for compatibility); cast the loosely-typed kwargs.
+        return cast(DeviceInfo, info_kwargs)
 
 
 class WyBotDockSensorBase(WyBotSensorBase):
@@ -169,13 +174,17 @@ class WyBotDockSensorBase(WyBotSensorBase):
                 connections.add(
                     (CONNECTION_BLUETOOTH, format_mac(self._data.docker.ble_name))
                 )
-        return DeviceInfo(
-            identifiers={(DOMAIN, f"{self._idx}_dock")},
-            name=dock_name,
-            manufacturer=MANUFACTURER,
-            model=dock_model,
-            connections=connections if connections else None,
-        )
+        info_kwargs: dict[str, Any] = {
+            "identifiers": {(DOMAIN, f"{self._idx}_dock")},
+            "name": dock_name,
+            "manufacturer": MANUFACTURER,
+            "model": dock_model,
+            "connections": connections if connections else None,
+        }
+        # HA's DeviceInfo TypedDict types connections as non-optional, but this
+        # integration stores None to mean "unset" (preserved for
+        # compatibility); cast the loosely-typed kwargs.
+        return cast(DeviceInfo, info_kwargs)
 
 
 class WyBotRobotBatterySensor(WyBotSensorBase):
@@ -295,9 +304,9 @@ class WyBotDockTypeSensor(WyBotDockSensorBase):
         return dock_info.dock_type.name.title()
 
     @property
-    def extra_state_attributes(self) -> dict:
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        attrs = {}
+        attrs: dict[str, Any] = {}
         if self._data:
             dock_info = self._data.get_dp(DockInfo)
             if dock_info is not None:
@@ -337,9 +346,9 @@ class WyBotLastBLECommunicationSensor(WyBotDockSensorBase):
         return self._coordinator.get_last_ble_communication(device_id)
 
     @property
-    def extra_state_attributes(self) -> dict:
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        attrs = {}
+        attrs: dict[str, Any] = {}
         if self._data and self._data.docker:
             device_id = self._data.docker.docker_id
             attrs["ble_available"] = self._coordinator.is_ble_available(device_id)
@@ -379,9 +388,9 @@ class WyBotLastMQTTCommunicationSensor(WyBotDockSensorBase):
         return self._coordinator.get_last_mqtt_communication(device_id)
 
     @property
-    def extra_state_attributes(self) -> dict:
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        attrs = {}
+        attrs: dict[str, Any] = {}
         if self._data and self._data.docker:
             attrs["mqtt_connected"] = self._coordinator._mqtt_connected
         return attrs
@@ -438,9 +447,9 @@ class WyBotDataSourceSensor(WyBotDockSensorBase):
         return "mdi:help-circle"
 
     @property
-    def extra_state_attributes(self) -> dict:
+    def extra_state_attributes(self) -> dict[str, Any]:
         """Return additional state attributes."""
-        attrs = {}
+        attrs: dict[str, Any] = {}
         if self._data and self._data.docker:
             device_id = self._data.docker.docker_id
             attrs["ble_available"] = self._coordinator.is_ble_available(device_id)
