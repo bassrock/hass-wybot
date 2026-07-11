@@ -22,6 +22,14 @@
         "data": {
           "password": "Password"
         }
+      },
+      "reconfigure": {
+        "title": "Reconfigure WyBot account",
+        "description": "Update the WyBot account credentials used by this integration.",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -34,6 +42,7 @@
       "already_configured": "Account is already configured",
       "already_in_progress": "Configuration flow is already in progress",
       "reauth_successful": "Re-authentication was successful",
+      "reconfigure_successful": "Reconfiguration was successful",
       "wrong_account": "The credentials are for a different WyBot account"
     }
   },
@@ -92,6 +101,17 @@
       "data_source": {
         "name": "Data source"
       }
+    }
+  },
+  "exceptions": {
+    "device_unavailable": {
+      "message": "The WyBot device is not available to receive commands."
+    },
+    "cannot_send_command": {
+      "message": "Failed to send the command to the WyBot device via Bluetooth or the cloud."
+    },
+    "wifi_send_failed": {
+      "message": "Failed to send WiFi credentials to dock {device} via Bluetooth."
     }
   }
 }

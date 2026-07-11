@@ -57,12 +57,22 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up the vacuum platform."""
-
     coordinator = entry.runtime_data
-    async_add_entities(
-        WyBotVacuum(idx=deviceId, coordinator=coordinator)
-        for deviceId in coordinator.vacuums
-    )
+    known: set[str] = set()
+
+    @callback
+    def _add_new_devices() -> None:
+        """Add vacuum entities for devices discovered after setup."""
+        new_ids = [d for d in coordinator.vacuums if d not in known]
+        known.update(new_ids)
+        if new_ids:
+            async_add_entities(
+                WyBotVacuum(idx=device_id, coordinator=coordinator)
+                for device_id in new_ids
+            )
+
+    _add_new_devices()
+    entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
 class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
@@ -276,37 +286,33 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity):
             | VacuumEntityFeature.STOP
         )
 
-    async def _async_send_command(self, dp: GenericDP, action: str) -> None:
+    async def _async_send_command(self, dp: GenericDP) -> None:
         """Send a command to the device, raising on failure."""
         if not self._data:
             raise HomeAssistantError(
-                f"Cannot {action}: WyBot device is not available"
+                translation_domain=DOMAIN, translation_key="device_unavailable"
             )
         if not await self.coordinator.async_send_command(self._data, dp):
             raise HomeAssistantError(
-                f"Failed to {action} via BLE or MQTT"
+                translation_domain=DOMAIN, translation_key="cannot_send_command"
             )
 
     async def async_set_fan_speed(self, fan_speed: str) -> None:
         """Set the fan speed of the vacuum cleaner."""
-        await self._async_send_command(
-            CleaningMode(mode=fan_speed), "set the cleaning mode"
-        )
+        await self._async_send_command(CleaningMode(mode=fan_speed))
 
     async def async_stop(self) -> None:
         """Stop the vacuum cleaner."""
         await self._async_send_command(
-            CleaningStatus(status=CleaningStatusMode.STOPPED), "stop the cleaner"
+            CleaningStatus(status=CleaningStatusMode.STOPPED)
         )
 
     async def async_start(self) -> None:
         """Start the vacuum cleaner."""
         await self._async_send_command(
-            CleaningStatus(status=CleaningStatusMode.CLEANING), "start the cleaner"
+            CleaningStatus(status=CleaningStatusMode.CLEANING)
         )
 
     async def async_return_to_base(self) -> None:
         """Return the vacuum cleaner to the dock."""
-        await self._async_send_command(
-            Dock(status=DockStatus.RETURNING), "return the cleaner to base"
-        )
+        await self._async_send_command(Dock(status=DockStatus.RETURNING))

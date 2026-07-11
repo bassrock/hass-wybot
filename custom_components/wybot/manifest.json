@@ -21,9 +21,9 @@
     "custom_components.wybot",
     "wybot"
   ],
-  "quality_scale": "silver",
+  "quality_scale": "gold",
   "requirements": [
     "pywybot==0.1.0"
   ],
-  "version": "3.1.0"
+  "version": "3.2.0"
 }

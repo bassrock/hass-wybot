@@ -93,7 +93,14 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
 
         # Use the MAC address as unique ID
         await self.async_set_unique_id(format_mac(discovery_info.address))
-        self._abort_if_unique_id_configured()
+        # If this dock is already configured, refresh its stored discovered
+        # address/name (they can change) instead of just aborting.
+        self._abort_if_unique_id_configured(
+            updates={
+                CONF_DISCOVERED_DEVICE_ADDRESS: discovery_info.address,
+                CONF_DISCOVERED_DEVICE_NAME: discovery_info.name,
+            }
+        )
 
         # Store discovery info for later use
         self._discovery_info = discovery_info
@@ -190,6 +197,52 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
             step_id="reauth_confirm",
             data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
             description_placeholders={"username": reauth_entry.data[CONF_USERNAME]},
+            errors=errors,
+        )
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Let the user change the WyBot account credentials."""
+        errors: dict[str, str] = {}
+        reconfigure_entry = self._get_reconfigure_entry()
+
+        if user_input is not None:
+            try:
+                info = await validate_input(self.hass, user_input)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:  # pylint: disable=broad-except
+                _LOGGER.exception("Unexpected exception")
+                errors["base"] = "unknown"
+            else:
+                # Guard against reconfiguring to a different account, but only
+                # when the existing entry already carries a unique_id.
+                if reconfigure_entry.unique_id is not None:
+                    await self.async_set_unique_id(info["user_id"])
+                    self._abort_if_unique_id_mismatch(reason="wrong_account")
+                return self.async_update_reload_and_abort(
+                    reconfigure_entry,
+                    unique_id=info["user_id"],
+                    data_updates={
+                        CONF_USERNAME: user_input[CONF_USERNAME],
+                        CONF_PASSWORD: user_input[CONF_PASSWORD],
+                    },
+                )
+
+        return self.async_show_form(
+            step_id="reconfigure",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_USERNAME,
+                        default=reconfigure_entry.data[CONF_USERNAME],
+                    ): str,
+                    vol.Required(CONF_PASSWORD): str,
+                }
+            ),
             errors=errors,
         )
 

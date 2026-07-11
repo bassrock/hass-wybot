@@ -7,13 +7,20 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.wybot import (
+    _async_purge_stale_devices,
+    _device_identifiers,
+    async_remove_config_entry_device,
+)
 from custom_components.wybot.const import DOMAIN
 from wybot import (
     WybotAuthError,
     WybotConnectionError,
 )
+from wybot_platform_helpers import make_coordinator, make_group
 
 USER = "pool@example.com"
 PASSWORD = "hunter2"
@@ -120,3 +127,52 @@ async def test_update_listener_refreshes_wifi_credentials(hass: HomeAssistant) -
     await _async_update_listener(hass, entry)
 
     coordinator.set_wifi_credentials.assert_called_once_with("net", "pw")
+
+
+def test_device_identifiers(hass: HomeAssistant) -> None:
+    """Device identifiers include the robot and (when present) the dock."""
+    coordinator, _ = make_coordinator(hass, {"grp1": make_group()})
+    ids = _device_identifiers(coordinator)
+    assert (DOMAIN, "grp1") in ids
+    assert (DOMAIN, "grp1_dock") in ids
+
+    no_dock, _ = make_coordinator(hass, {"g2": make_group(with_docker=False)})
+    ids2 = _device_identifiers(no_dock)
+    assert (DOMAIN, "g2") in ids2
+    assert (DOMAIN, "g2_dock") not in ids2
+
+
+async def test_purge_stale_devices(hass: HomeAssistant) -> None:
+    """Devices no longer on the account are unlinked from the entry."""
+    coordinator, entry = make_coordinator(hass, {"grp1": make_group()})
+    entry.runtime_data = coordinator
+    registry = dr.async_get(hass)
+    current = registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "grp1")}
+    )
+    stale = registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "old_robot")}
+    )
+
+    _async_purge_stale_devices(hass, entry, coordinator)
+    await hass.async_block_till_done()
+
+    assert registry.async_get(current.id) is not None
+    stale_after = registry.async_get(stale.id)
+    assert stale_after is None or entry.entry_id not in stale_after.config_entries
+
+
+async def test_async_remove_config_entry_device(hass: HomeAssistant) -> None:
+    """Manual device removal is allowed only for devices not on the account."""
+    coordinator, entry = make_coordinator(hass, {"grp1": make_group()})
+    entry.runtime_data = coordinator
+    registry = dr.async_get(hass)
+    present = registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "grp1")}
+    )
+    absent = registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "gone")}
+    )
+
+    assert await async_remove_config_entry_device(hass, entry, present) is False
+    assert await async_remove_config_entry_device(hass, entry, absent) is True

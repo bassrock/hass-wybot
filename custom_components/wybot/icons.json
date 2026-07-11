@@ -1,0 +1,27 @@
+{
+  "entity": {
+    "sensor": {
+      "dock_type": {
+        "default": "mdi:home-import-outline"
+      },
+      "last_ble_communication": {
+        "default": "mdi:bluetooth-connect"
+      },
+      "last_mqtt_communication": {
+        "default": "mdi:cloud-clock"
+      },
+      "data_source": {
+        "default": "mdi:help-circle",
+        "state": {
+          "Bluetooth": "mdi:bluetooth",
+          "Cloud (MQTT)": "mdi:cloud"
+        }
+      }
+    },
+    "button": {
+      "wifi_reconfigure": {
+        "default": "mdi:wifi-cog"
+      }
+    }
+  }
+}

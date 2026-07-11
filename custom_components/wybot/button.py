@@ -4,7 +4,7 @@ import logging
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -28,34 +28,43 @@ async def async_setup_entry(
     """Set up WyBot buttons from a config entry."""
     coordinator = config_entry.runtime_data
 
-    entities: list[ButtonEntity] = []
-
     # Get WiFi credentials from config entry
     wifi_ssid = config_entry.data.get(CONF_WIFI_SSID)
     wifi_password = config_entry.data.get(CONF_WIFI_PASSWORD)
+    known: set[str] = set()
 
-    # Add WiFi reconfigure button for each dock device (if credentials configured)
-    for idx in coordinator.vacuums:
-        group = coordinator.data.get(idx)
-        # Only create button if there's a dock with a BLE name and WiFi credentials
-        if (
-            group
-            and group.docker
-            and group.docker.ble_name
-            and wifi_ssid
-            and wifi_password
-        ):
-            entities.append(
-                WyBotWifiReconfigureButton(
-                    coordinator,
-                    idx,
-                    group.docker.ble_name,
-                    wifi_ssid,
-                    wifi_password,
+    @callback
+    def _add_new_devices() -> None:
+        """Add WiFi buttons for qualifying devices discovered after setup."""
+        entities: list[ButtonEntity] = []
+        # Only create a button if the device has a dock with a BLE name and
+        # WiFi credentials are configured.
+        for idx in coordinator.vacuums:
+            if idx in known:
+                continue
+            group = coordinator.data.get(idx)
+            if (
+                group
+                and group.docker
+                and group.docker.ble_name
+                and wifi_ssid
+                and wifi_password
+            ):
+                known.add(idx)
+                entities.append(
+                    WyBotWifiReconfigureButton(
+                        coordinator,
+                        idx,
+                        group.docker.ble_name,
+                        wifi_ssid,
+                        wifi_password,
+                    )
                 )
-            )
+        if entities:
+            async_add_entities(entities)
 
-    async_add_entities(entities)
+    _add_new_devices()
+    config_entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
 class WyBotWifiReconfigureButton(CoordinatorEntity[WyBotCoordinator], ButtonEntity):
@@ -114,6 +123,8 @@ class WyBotWifiReconfigureButton(CoordinatorEntity[WyBotCoordinator], ButtonEnti
         )
         if not success:
             raise HomeAssistantError(
-                f"Failed to send WiFi credentials to dock {self._ble_name} via BLE"
+                translation_domain=DOMAIN,
+                translation_key="wifi_send_failed",
+                translation_placeholders={"device": self._ble_name},
             )
         _LOGGER.info("Successfully sent WiFi credentials to dock %s", self._ble_name)
