@@ -2,6 +2,7 @@
 
 [![GitHub release](https://img.shields.io/github/v/release/bassrock/hass-wybot?style=for-the-badge)](http://github.com/bassrock/hass-wybot/releases/latest)
 [![hacs_badge](https://img.shields.io/badge/HACS-Default-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
+[![Quality Scale](https://img.shields.io/badge/Quality_Scale-Platinum-e5e4e2?style=for-the-badge)](https://developers.home-assistant.io/docs/core/integration-quality-scale/)
 [![Python](https://img.shields.io/badge/python-3.13%2B-blue?style=for-the-badge)](https://www.python.org)
 
 A Home Assistant custom integration for [WyBot pool vacuums](https://www.wybotpool.com/). Control your pool robot as a Vacuum entity with real-time status, battery monitoring, and solar dock tracking.
