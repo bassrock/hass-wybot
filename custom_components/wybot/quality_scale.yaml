@@ -9,8 +9,10 @@ rules:
     status: done
     comment: DataUpdateCoordinator polls every 30 seconds (BLE/MQTT/HTTP).
   brands:
-    status: todo
-    comment: Submit logo/icon assets to home-assistant/brands (human follow-up).
+    status: done
+    comment: >-
+      Brand icons/logos ship in the integration's brand/ folder (local brand
+      images, supported since Home Assistant 2026.3).
   common-modules: done
   config-flow-test-coverage: done
   config-flow: done
@@ -23,12 +25,8 @@ rules:
     status: exempt
     comment: No service actions are provided.
   docs-high-level-description: done
-  docs-installation-instructions:
-    status: todo
-    comment: Expand README installation instructions.
-  docs-removal-instructions:
-    status: todo
-    comment: Add removal instructions to the README.
+  docs-installation-instructions: done
+  docs-removal-instructions: done
   docs-triggers:
     status: exempt
     comment: The integration provides no triggers.
@@ -48,12 +46,8 @@ rules:
     status: done
     comment: Vacuum and button entity actions raise HomeAssistantError on failure.
   config-entry-unloading: done
-  docs-configuration-parameters:
-    status: todo
-    comment: Document all options-flow parameters in the README.
-  docs-installation-parameters:
-    status: todo
-    comment: Document all config-flow parameters in the README.
+  docs-configuration-parameters: done
+  docs-installation-parameters: done
   entity-unavailable: done
   integration-owner: done
   log-when-unavailable:
