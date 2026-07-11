@@ -7,16 +7,22 @@ from homeassistant.config_entries import ConfigEntry, ConfigEntryAuthFailed, Con
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
+from wybot import (
+    WyBotBLEClient,
+    WyBotHTTPClient,
+    WyBotMQTTClient,
+    WybotAuthError,
+    WybotConnectionError,
+)
+from wybot.dp_models import GenericDP
+from wybot.models import Command, Device, Docker, Group
+
+from .bluetooth_adapter import HomeAssistantBluetoothAdapter
 from .const import (
     BLE_MAX_CONSECUTIVE_FAILURES,
     CONF_WIFI_PASSWORD,
     CONF_WIFI_SSID,
 )
-from .wybot_ble_client import WyBotBLEClient
-from .wybot_dp_models import GenericDP
-from .wybot_http_client import WyBotHTTPClient
-from .wybot_models import Command, Device, Docker, Group
-from .wybot_mqtt_client import WyBotMQTTClient
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -98,7 +104,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
         self.wybot_http_client = wybot_http_client
         self.wybot_mqtt_client = WyBotMQTTClient(self.on_message)
         # DON'T connect MQTT here - use lazy connection when needed as fallback
-        self.wybot_ble_client = WyBotBLEClient(hass)
+        self.wybot_ble_client = WyBotBLEClient(HomeAssistantBluetoothAdapter(hass))
         self.data = {}
 
         # Initialize data tracking
@@ -119,6 +125,15 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 "WiFi credentials loaded for SSID: %s (manual provisioning only)",
                 self._wifi_ssid,
             )
+
+    def set_wifi_credentials(
+        self, ssid: str | None, password: str | None
+    ) -> None:
+        """Update stored WiFi credentials (for manual provisioning)."""
+        self._wifi_ssid = ssid
+        self._wifi_password = password
+        if ssid:
+            _LOGGER.debug("WiFi credentials updated for SSID: %s", ssid)
 
     async def async_stop(self):
         """Stop the MQTT client."""
@@ -402,6 +417,10 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 self.wybot_http_client.get_devices_and_status
             )
             self._last_http_refresh_time = current_time
+        except WybotAuthError:
+            # Credentials became invalid during normal operation — let this
+            # propagate so _async_update_data can trigger the reauth flow.
+            raise
         except Exception as err:
             _LOGGER.debug("HTTP refresh failed (non-critical): %s", err)
 
@@ -464,11 +483,23 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 # Update connection availability based on data sources
                 if self.data:
                     self._connection_available = True
-                else:
-                    self._connection_available = False
+                    return self.data
 
-                return self.data
+                # No data from any source — surface as a failed update so the
+                # DataUpdateCoordinator logs once now and once on recovery
+                # (log-when-unavailable) and entities go unavailable.
+                self._connection_available = False
+                raise UpdateFailed("No data received from any source (BLE/MQTT/HTTP)")
 
+        except (ConfigEntryAuthFailed, WybotAuthError) as err:
+            # Credentials are no longer valid — trigger the reauth flow.
+            self._connection_available = False
+            if isinstance(err, ConfigEntryAuthFailed):
+                raise
+            raise ConfigEntryAuthFailed("Authentication failed") from err
+        except ConfigEntryNotReady:
+            self._connection_available = False
+            raise
         except TimeoutError as err:
             _LOGGER.error("Timeout updating data: %s", err)
             self._connection_available = False
@@ -508,6 +539,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     delay = min(delay * 2, MAX_RETRY_DELAY)
                 else:
                     raise UpdateFailed("Failed to get device data after retries")
+            except WybotAuthError as err:
+                _LOGGER.error("Authentication failed, credentials may be invalid")
+                raise ConfigEntryAuthFailed("Authentication failed") from err
             except Exception as err:
                 last_error = err
                 _LOGGER.warning(
@@ -517,11 +551,6 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     err,
                 )
                 self._http_failure_count += 1
-
-                # Check if it's an authentication error
-                if "401" in str(err) or "authentication" in str(err).lower():
-                    _LOGGER.error("Authentication failed, credentials may be invalid")
-                    raise ConfigEntryAuthFailed("Authentication failed") from err
 
                 if attempt < MAX_HTTP_RETRIES - 1:
                     await asyncio.sleep(delay)
@@ -851,7 +880,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
             return
 
         try:
-            from .wybot_models import Command
+            from wybot.models import Command
 
             # Create a command-like structure to reuse existing DP processing
             cmd_data = {"cmd": 5, "ts": 0, "dp": dps}

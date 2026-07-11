@@ -15,6 +15,13 @@
           "wifi_ssid": "The WiFi network name your WyBot device should connect to. Used for manual WiFi provisioning via the diagnostic button.",
           "wifi_password": "The WiFi password for the network. Required if WiFi SSID is provided."
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate WyBot",
+        "description": "The password for {username} is no longer valid. Enter the new password.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
@@ -25,7 +32,9 @@
     },
     "abort": {
       "already_configured": "Account is already configured",
-      "already_in_progress": "Configuration flow is already in progress"
+      "already_in_progress": "Configuration flow is already in progress",
+      "reauth_successful": "Re-authentication was successful",
+      "wrong_account": "The credentials are for a different WyBot account"
     }
   },
   "options": {

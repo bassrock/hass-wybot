@@ -1,0 +1,20 @@
+# Test dependencies for the WyBot integration.
+# Tests run against the real Home Assistant test harness.
+pytest-homeassistant-custom-component
+pytest-cov
+
+# The WyBot client library (also declared in manifest.json requirements).
+# Pulls in bleak, bleak-retry-connector, paho-mqtt, pydantic, and requests.
+pywybot==0.1.0
+
+# Transitive requirements pulled in by `homeassistant.components.bluetooth`
+# (and the usb component it imports) when the wybot package is loaded.
+habluetooth
+bluetooth-adapters
+bluetooth-auto-recovery
+dbus-fast
+aiousbwatcher
+usb-devices
+pyserial
+serialx
+aioesphomeapi

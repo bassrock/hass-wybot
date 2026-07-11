@@ -74,6 +74,40 @@ Download the [latest release](https://github.com/bassrock/hass-wybot/releases/la
 
 > **Bluetooth discovery:** If you have a DS20 dock in Bluetooth range, Home Assistant will automatically detect it and prompt you to set up the integration.
 
+### Configuration parameters
+
+Provided during setup (**Settings → Devices & Services → Add Integration → WyBot**):
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| Email | Yes | The email address for your WyBot account. |
+| Password | Yes | The password for your WyBot account. |
+| WiFi network name | No | SSID your dock should join. Only used for manual WiFi provisioning via the diagnostic button. If set, WiFi password is required. |
+| WiFi password | No | Password for the WiFi network above. |
+
+The WiFi network name and password can also be changed later without removing the
+integration via **Settings → Devices & Services → WyBot → Configure** (the options flow).
+
+Only one config entry per WyBot account is allowed; a single account manages all of
+its docks and robots.
+
+### Reauthentication
+
+If your WyBot password changes, the integration detects the invalid credentials and
+raises a **Reauthenticate** notification in Home Assistant. Open it and enter the new
+password — the entry reloads automatically without needing to be removed and re-added.
+
+## Removing the integration
+
+This integration follows standard Home Assistant removal — no extra steps are needed.
+
+1. Go to **Settings → Devices & Services**.
+2. Select the **WyBot** integration.
+3. Click the **⋮** menu on the config entry and choose **Delete**.
+
+This removes all WyBot devices and entities. To fully uninstall the code, remove the
+integration from HACS (or delete `config/custom_components/wybot/`) and restart Home Assistant.
+
 ## How It Works
 
 The integration uses a **BLE-first with MQTT fallback** architecture:
