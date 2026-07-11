@@ -313,3 +313,124 @@ async def test_bluetooth_discovery_robot_name(hass: HomeAssistant) -> None:
     )
     assert result["type"] is FlowResultType.FORM
     assert result["step_id"] == "user"
+
+
+async def _start_reconfigure(hass: HomeAssistant, entry: MockConfigEntry):
+    """Start a reconfigure flow, preferring the helper when available."""
+    if hasattr(entry, "start_reconfigure_flow"):
+        return await entry.start_reconfigure_flow(hass)
+    return await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={
+            "source": config_entries.SOURCE_RECONFIGURE,
+            "entry_id": entry.entry_id,
+        },
+    )
+
+
+async def test_reconfigure_success(hass: HomeAssistant) -> None:
+    """Reconfigure updates the stored username/password and reloads the entry."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+
+    result = await _start_reconfigure(hass, entry)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "reconfigure"
+
+    new_user = "new@example.com"
+    with _patch_client(_client(user_id=USER_ID)), _patch_setup():
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: new_user, CONF_PASSWORD: "newpass"},
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "reconfigure_successful"
+    assert entry.data[CONF_USERNAME] == new_user
+    assert entry.data[CONF_PASSWORD] == "newpass"
+
+
+async def test_reconfigure_wrong_account(hass: HomeAssistant) -> None:
+    """Reconfiguring to a different account is rejected."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+
+    result = await _start_reconfigure(hass, entry)
+    with _patch_client(_client(user_id="different-account")):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "other@example.com", CONF_PASSWORD: "newpass"},
+        )
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "wrong_account"
+
+
+async def test_reconfigure_invalid_auth(hass: HomeAssistant) -> None:
+    """Bad credentials during reconfigure show an error and stay on the form."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+
+    result = await _start_reconfigure(hass, entry)
+    with _patch_client(_client(authenticate=WybotAuthError)):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: USER, CONF_PASSWORD: "bad"},
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_auth"}
+
+
+@pytest.mark.parametrize(
+    ("side_effect", "expected"),
+    [
+        (WybotConnectionError, "cannot_connect"),
+        (Exception, "unknown"),
+    ],
+)
+async def test_reconfigure_errors(
+    hass: HomeAssistant, side_effect, expected
+) -> None:
+    """Connection and unexpected errors during reconfigure show a form error."""
+    entry = _entry()
+    entry.add_to_hass(hass)
+
+    result = await _start_reconfigure(hass, entry)
+    with _patch_client(_client(authenticate=side_effect)):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: USER, CONF_PASSWORD: "bad"},
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": expected}
+
+
+async def test_bluetooth_discovery_updates_configured_entry(
+    hass: HomeAssistant,
+) -> None:
+    """A discovery for an already-configured dock updates its stored address."""
+    address = "AA:BB:CC:DD:EE:FF"
+    from homeassistant.helpers.device_registry import format_mac
+
+    entry = _entry(
+        unique_id=format_mac(address),
+        **{
+            "discovered_device_address": "00:00:00:00:00:00",
+            "discovered_device_name": "DS20-OLD",
+        },
+    )
+    entry.add_to_hass(hass)
+
+    info = _service_info(name="DS20-NEW", address=address)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_BLUETOOTH},
+        data=info,
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+    # The stored discovered device info was refreshed from the new advertisement.
+    assert entry.data["discovered_device_address"] == address
+    assert entry.data["discovered_device_name"] == "DS20-NEW"

@@ -41,18 +41,27 @@ async def async_setup_entry(
 ) -> None:
     """Set up the WyBot binary sensor platform."""
     coordinator = entry.runtime_data
+    known: set[str] = set()
 
-    entities: list[BinarySensorEntity] = []
+    @callback
+    def _add_new_devices() -> None:
+        """Add binary sensors for devices discovered after setup."""
+        entities: list[BinarySensorEntity] = []
+        for device_id in coordinator.vacuums:
+            if device_id in known:
+                continue
+            known.add(device_id)
+            entities.extend(
+                [
+                    WyBotRobotChargingBinarySensor(idx=device_id, coordinator=coordinator),
+                    WyBotDockChargingBinarySensor(idx=device_id, coordinator=coordinator),
+                ]
+            )
+        if entities:
+            async_add_entities(entities)
 
-    for device_id in coordinator.vacuums:
-        entities.extend(
-            [
-                WyBotRobotChargingBinarySensor(idx=device_id, coordinator=coordinator),
-                WyBotDockChargingBinarySensor(idx=device_id, coordinator=coordinator),
-            ]
-        )
-
-    async_add_entities(entities)
+    _add_new_devices()
+    entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
 class WyBotBinarySensorBase(BinarySensorEntity, CoordinatorEntity):

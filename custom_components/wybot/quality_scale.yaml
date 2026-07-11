@@ -60,3 +60,38 @@ rules:
   test-coverage:
     status: done
     comment: 99% coverage on the HA test harness (pytest-homeassistant-custom-component).
+
+  # --- Gold ---
+  devices: done
+  diagnostics: done
+  discovery: done
+  discovery-update-info:
+    status: done
+    comment: Bluetooth re-discovery updates the stored device address on the entry.
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices: done
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices:
+    status: done
+    comment: Platforms create entities for devices added to the account after setup.
+  entity-category: done
+  entity-device-class: done
+  entity-disabled-by-default: done
+  entity-translations: done
+  exception-translations: done
+  icon-translations: done
+  reconfiguration-flow: done
+  repair-issues:
+    status: exempt
+    comment: >-
+      The only user-actionable failure is invalid credentials, which is handled by
+      the reauthentication flow; other failures (BLE/cloud unreachable) auto-recover.
+  stale-devices:
+    status: done
+    comment: >-
+      Devices removed from the account are purged from the registry, and manual
+      removal is allowed via async_remove_config_entry_device.

@@ -118,6 +118,91 @@ The integration uses a **BLE-first with MQTT fallback** architecture:
 
 Commands (start, stop, return to dock) are also sent via BLE first, falling back to MQTT if needed.
 
+## Supported functionality
+
+Each WyBot robot (and its dock, if present) is exposed as one or more Home Assistant devices with the following platforms. See the [Entities](#entities) tables above for the full per-entity breakdown.
+
+- **`vacuum`** — Start, stop, and return-to-dock control, plus cleaning-mode selection (7 modes).
+- **`sensor`** — Robot and dock battery levels, solar energy harvested, dock type, data source (Bluetooth/Cloud), and last-communication timestamps.
+- **`binary_sensor`** — Robot charging and solar-dock charging status.
+- **`button`** — Send WiFi credentials to the dock via Bluetooth (diagnostic, disabled by default).
+
+## Use cases
+
+- **Scheduled nightly cleaning** — Automatically start the robot on a floor-cleaning cycle each night (or on your preferred days) so the pool is ready in the morning.
+- **Notify when cleaning completes** — Send a phone notification when the robot finishes and returns to the dock, so you know it's done without checking the pool.
+- **Return to dock on low battery** — Trigger a return-to-dock (or a reminder) when the robot battery drops below a threshold to avoid it stranding mid-pool.
+- **Dashboard status at a glance** — Show battery level, charging status, solar energy harvested, and the current data source (Bluetooth vs. Cloud) on a Lovelace dashboard.
+
+## Example automations
+
+These are copy-pasteable starting points. Replace the `entity_id` values with the ones created for your device (find them under **Settings → Devices & Services → WyBot**, or in **Developer Tools → States**).
+
+**Start cleaning every day at 8am**
+
+```yaml
+alias: WyBot - Start cleaning at 8am
+triggers:
+  - trigger: time
+    at: "08:00:00"
+actions:
+  - action: vacuum.start
+    target:
+      entity_id: vacuum.wybot_s2_pro
+mode: single
+```
+
+**Notify when the robot battery is fully charged**
+
+```yaml
+alias: WyBot - Notify when battery full
+triggers:
+  - trigger: numeric_state
+    entity_id: sensor.wybot_s2_pro_robot_battery
+    above: 99
+actions:
+  - action: notify.notify
+    data:
+      title: WyBot
+      message: The pool robot is fully charged and ready to clean.
+mode: single
+```
+
+> A ready-made blueprint that bundles scheduling, completion notifications, and battery alerts is described under [Blueprints](#blueprints) below.
+
+## Known limitations
+
+- **The robot goes offline underwater** — WyBot robots disconnect from WiFi when submerged. The dock stays online and relays commands to the robot via Bluetooth, so control while the robot is in the water depends on the dock being powered and in BLE range.
+- **Cloud dependency for remote control** — When the dock is out of Bluetooth range of your Home Assistant host, the integration falls back to WyBot's cloud MQTT broker. Remote control and status updates then depend on WyBot's cloud service being reachable.
+- **Dock must be set up before the robot** — WiFi provisioning happens on the dock before the robot is paired. See [Setting Up a WyBot S2 Pro with a Dock](#setting-up-a-wybot-s2-pro-with-a-dock) — there is no way to configure the dock's WiFi after the robot has been paired.
+- **Bluetooth range** — BLE-first operation requires the dock to be within Bluetooth range of your Home Assistant host or a Bluetooth proxy. Outside that range the integration relies on the cloud fallback.
+
+## Troubleshooting
+
+**A device shows as `unavailable`**
+- Check that the dock is powered on and within Bluetooth range of your Home Assistant host (or a Bluetooth proxy).
+- If relying on the cloud fallback, confirm your Home Assistant host has internet access and WyBot's cloud service is reachable.
+- Check the **Data source** and **Last BLE/MQTT communication** diagnostic sensors to see how (and when) the device was last reached.
+
+**Commands (start/stop/return to dock) don't work**
+- Commands are sent over Bluetooth first, then the cloud. If the dock is at the edge of BLE range, try again — a transient BLE write can fail and the next attempt often succeeds.
+- Confirm the dock is online (see above) and that the robot is docked or in the water within range of the dock.
+
+**A reauthentication prompt appears**
+- If your WyBot password changes, Home Assistant raises a **Reauthenticate** notification. Open it and enter the new password; the entry reloads automatically. See [Reauthentication](#reauthentication).
+
+**Enabling debug logging**
+
+Add the following to your `configuration.yaml` and restart Home Assistant to capture detailed logs for bug reports:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.wybot: debug
+    wybot: debug
+```
+
 ## Setting Up a WyBot S2 Pro with a Dock
 
 > **⚠️ Important:** The dock must be set up **before** the robot. You must first set up the dock and connect it to WiFi, then pair the robot with it. There is no way to configure WiFi on the dock after the robot has been paired.

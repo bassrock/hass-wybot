@@ -49,25 +49,33 @@ async def async_setup_entry(
 ) -> None:
     """Set up the WyBot sensor platform."""
     coordinator = entry.runtime_data
+    known: set[str] = set()
 
-    entities: list[SensorEntity] = []
+    @callback
+    def _add_new_devices() -> None:
+        """Add sensor entities for devices discovered after setup."""
+        entities: list[SensorEntity] = []
+        for device_id in coordinator.vacuums:
+            if device_id in known:
+                continue
+            known.add(device_id)
+            entities.extend(
+                [
+                    WyBotRobotBatterySensor(idx=device_id, coordinator=coordinator),
+                    WyBotSolarDockBatterySensor(idx=device_id, coordinator=coordinator),
+                    WyBotSolarEnergySensor(idx=device_id, coordinator=coordinator),
+                    WyBotDockTypeSensor(idx=device_id, coordinator=coordinator),
+                    # Diagnostic sensors for communication tracking
+                    WyBotLastBLECommunicationSensor(idx=device_id, coordinator=coordinator),
+                    WyBotLastMQTTCommunicationSensor(idx=device_id, coordinator=coordinator),
+                    WyBotDataSourceSensor(idx=device_id, coordinator=coordinator),
+                ]
+            )
+        if entities:
+            async_add_entities(entities)
 
-    for device_id in coordinator.vacuums:
-        # Add sensors for each device
-        entities.extend(
-            [
-                WyBotRobotBatterySensor(idx=device_id, coordinator=coordinator),
-                WyBotSolarDockBatterySensor(idx=device_id, coordinator=coordinator),
-                WyBotSolarEnergySensor(idx=device_id, coordinator=coordinator),
-                WyBotDockTypeSensor(idx=device_id, coordinator=coordinator),
-                # Diagnostic sensors for communication tracking
-                WyBotLastBLECommunicationSensor(idx=device_id, coordinator=coordinator),
-                WyBotLastMQTTCommunicationSensor(idx=device_id, coordinator=coordinator),
-                WyBotDataSourceSensor(idx=device_id, coordinator=coordinator),
-            ]
-        )
-
-    async_add_entities(entities)
+    _add_new_devices()
+    entry.async_on_unload(coordinator.async_add_listener(_add_new_devices))
 
 
 class WyBotSensorBase(SensorEntity, CoordinatorEntity):
