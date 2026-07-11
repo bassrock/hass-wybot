@@ -202,6 +202,12 @@ class TestDevice:
         with pytest.raises(TypeError):
             dev.get_dp(str)  # type: ignore
 
+    def test_empty_list_version_coerced_to_none(self, sample_api_device):
+        """API sometimes returns version: [] instead of an object/null."""
+        data = {**sample_api_device, "version": []}
+        dev = Device(**data)
+        assert dev.version is None
+
 
 # =============================================================================
 # Docker
@@ -223,6 +229,12 @@ class TestDocker:
         dock = Docker(**sample_api_docker)
         assert dock.online is False
         assert dock.dps == {}
+
+    def test_empty_list_version_coerced_to_none(self, sample_api_docker):
+        """API sometimes returns version: [] instead of an object/null."""
+        data = {**sample_api_docker, "version": []}
+        dock = Docker(**data)
+        assert dock.version is None
 
 
 # =============================================================================
@@ -317,3 +329,24 @@ class TestDevicesResponse:
         }
         resp = DevicesResponse(**data)
         assert len(resp.metadata.groups) == 0
+
+    def test_empty_list_version_in_nested_group(self, sample_api_group):
+        """Regression: API returns version: [] on nested device/docker.
+
+        Previously raised 2 validation errors for DevicesResponse on
+        metadata.groups.0.{device,docker}.version.
+        """
+        group = {
+            **sample_api_group,
+            "device": {**sample_api_group["device"], "version": []},
+            "docker": {**sample_api_group["docker"], "version": []},
+        }
+        data = {
+            "code": 200,
+            "reason": "OK",
+            "message": "Success",
+            "metadata": {"groups": [group]},
+        }
+        resp = DevicesResponse(**data)
+        assert resp.metadata.groups[0].device.version is None
+        assert resp.metadata.groups[0].docker.version is None

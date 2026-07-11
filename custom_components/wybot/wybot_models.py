@@ -1,8 +1,8 @@
 """Provides response models for the Wybot HTTP and MQTT API."""
 
-from typing import TypeVar
+from typing import Annotated, TypeVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 from .wybot_dp_models import DP, GenericDP, wybot_dp_id
 
@@ -80,6 +80,23 @@ class Version(BaseModel):
     )
 
 
+def _coerce_empty_version(value: object) -> object:
+    """Coerce an empty ``version`` list to ``None``.
+
+    The cloud API sometimes returns ``version: []`` (an empty list) instead of
+    an object or ``null`` when no firmware info is available. Pydantic rejects a
+    list for a ``Version | None`` field, so normalize the empty-list case to
+    ``None`` before validation.
+    """
+    if isinstance(value, list) and not value:
+        return None
+    return value
+
+
+# ``Version | None`` that tolerates the API's empty-list form (see above).
+OptionalVersion = Annotated[Version | None, BeforeValidator(_coerce_empty_version)]
+
+
 class Device(BaseModel):
     """Represents a device's information including identifiers, type, and version."""
 
@@ -87,7 +104,7 @@ class Device(BaseModel):
     device_name: str = Field(alias="deviceName")
     device_type: str = Field(alias="deviceType")
     ble_name: str = Field(alias="bleName")
-    version: Version | None = None
+    version: OptionalVersion = None
     pool_id: str | None = Field(default=None, alias="poolId")
     auto_update: str = Field(alias="autoUpdate")
 
@@ -130,7 +147,7 @@ class Docker(BaseModel):
     device_status: str = Field(alias="deviceStatus")
     docker_status: str = Field(alias="dockerStatus")
     schedule: str | None = Field(default=None, alias="schedule")
-    version: Version | None = None
+    version: OptionalVersion = None
 
     # Extra added fields
     online: bool = False
