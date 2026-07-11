@@ -9,8 +9,10 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from wybot import WyBotHTTPClient, WybotAuthError, WybotConnectionError
+from wybot.exceptions import WybotAuthError, WybotConnectionError
+from wybot.http_client import WyBotHTTPClient
 
 from .const import CONF_WIFI_PASSWORD, CONF_WIFI_SSID, DOMAIN
 from .wybot_coordinator import WyBotCoordinator
@@ -53,11 +55,13 @@ def _async_purge_stale_devices(
 async def async_setup_entry(hass: HomeAssistant, entry: WyBotConfigEntry) -> bool:
     """Set up WyBot from a config entry."""
     wybot_http_client = WyBotHTTPClient(
-        entry.data[CONF_USERNAME], entry.data[CONF_PASSWORD]
+        entry.data[CONF_USERNAME],
+        entry.data[CONF_PASSWORD],
+        session=async_get_clientsession(hass),
     )
 
     try:
-        await hass.async_add_executor_job(wybot_http_client.authenticate)
+        await wybot_http_client.authenticate()
     except WybotAuthError as err:
         raise ConfigEntryAuthFailed("Invalid WyBot credentials") from err
     except WybotConnectionError as err:

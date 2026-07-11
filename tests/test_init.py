@@ -39,9 +39,9 @@ def _patch_http(authenticate=None):
     client = MagicMock()
     client.user_id = USER_ID
     if authenticate is not None:
-        client.authenticate.side_effect = authenticate
+        client.authenticate = AsyncMock(side_effect=authenticate)
     else:
-        client.authenticate.return_value = True
+        client.authenticate = AsyncMock(return_value=True)
     return patch("custom_components.wybot.WyBotHTTPClient", return_value=client)
 
 

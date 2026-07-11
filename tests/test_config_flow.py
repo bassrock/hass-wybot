@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant import config_entries
@@ -27,9 +27,9 @@ def _client(user_id: str = USER_ID, authenticate=None) -> MagicMock:
     client = MagicMock()
     client.user_id = user_id
     if authenticate is not None:
-        client.authenticate.side_effect = authenticate
+        client.authenticate = AsyncMock(side_effect=authenticate)
     else:
-        client.authenticate.return_value = True
+        client.authenticate = AsyncMock(return_value=True)
     return client
 
 

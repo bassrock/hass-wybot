@@ -30,3 +30,6 @@ jobs:
           --cov=custom_components/wybot
           --cov-report=term-missing
           --cov-fail-under=95
+
+      - name: Type check
+        run: python -m mypy custom_components/wybot

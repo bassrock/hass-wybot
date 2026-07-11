@@ -95,3 +95,18 @@ rules:
     comment: >-
       Devices removed from the account are purged from the registry, and manual
       removal is allowed via async_remove_config_entry_device.
+
+  # --- Platinum ---
+  async-dependency:
+    status: done
+    comment: The pywybot dependency is fully async (aiohttp / aiomqtt / bleak).
+  inject-websession:
+    status: done
+    comment: >-
+      WyBotHTTPClient accepts an aiohttp session; the integration passes Home
+      Assistant's shared session via async_get_clientsession.
+  strict-typing:
+    status: done
+    comment: >-
+      Passes mypy --strict (CI-enforced), and depends on the strictly-typed,
+      py.typed pywybot package.
