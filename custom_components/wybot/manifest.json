@@ -22,7 +22,7 @@
   ],
   "ssdp": [],
   "zeroconf": [],
-  "version": "2.3.0",
+  "version": "2.3.1",
   "loggers": [
     "custom_components.wybot"
   ]
