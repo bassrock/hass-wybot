@@ -12,9 +12,7 @@ rules:
     status: todo
     comment: Submit logo/icon assets to home-assistant/brands (human follow-up).
   common-modules: done
-  config-flow-test-coverage:
-    status: todo
-    comment: Config-flow tests are being rebuilt on pytest-homeassistant-custom-component.
+  config-flow-test-coverage: done
   config-flow: done
   dependency-transparency:
     status: done
@@ -66,5 +64,5 @@ rules:
   parallel-updates: done
   reauthentication-flow: done
   test-coverage:
-    status: todo
-    comment: Rebuild the suite on the HA test harness to exceed 95% coverage.
+    status: done
+    comment: 99% coverage on the HA test harness (pytest-homeassistant-custom-component).

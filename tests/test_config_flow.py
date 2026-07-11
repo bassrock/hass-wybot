@@ -178,6 +178,41 @@ async def test_reauth_invalid_auth(hass: HomeAssistant) -> None:
     assert result["errors"] == {"base": "invalid_auth"}
 
 
+@pytest.mark.parametrize(
+    ("side_effect", "expected"),
+    [
+        (WybotConnectionError, "cannot_connect"),
+        (Exception, "unknown"),
+    ],
+)
+async def test_reauth_errors(hass: HomeAssistant, side_effect, expected) -> None:
+    """Connection and unexpected errors during reauth show a form error."""
+    entry = _entry(**{CONF_PASSWORD: "old"})
+    entry.add_to_hass(hass)
+
+    result = await entry.start_reauth_flow(hass)
+    with _patch_client(_client(authenticate=side_effect)):
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "bad"}
+        )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": expected}
+
+
+async def test_options_flow_clears_wifi(hass: HomeAssistant) -> None:
+    """Submitting an empty SSID removes stored WiFi credentials."""
+    entry = _entry(**{CONF_WIFI_SSID: "old", CONF_WIFI_PASSWORD: "oldpw"})
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_WIFI_SSID: "", CONF_WIFI_PASSWORD: ""}
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert CONF_WIFI_SSID not in entry.data
+    assert CONF_WIFI_PASSWORD not in entry.data
+
+
 async def test_options_flow_sets_wifi(hass: HomeAssistant) -> None:
     """The options flow stores WiFi credentials on the entry."""
     entry = _entry()
@@ -206,3 +241,75 @@ async def test_options_flow_wifi_password_required(hass: HomeAssistant) -> None:
     )
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "wifi_password_required"}
+
+
+def _service_info(name: str = "DS20-1234", address: str = "AA:BB:CC:DD:EE:FF"):
+    """Build a BluetoothServiceInfoBleak for a discovered device."""
+    from bleak.backends.device import BLEDevice
+    from bleak.backends.scanner import AdvertisementData
+    from homeassistant.components.bluetooth import BluetoothServiceInfoBleak
+
+    device = BLEDevice(address=address, name=name, details={})
+    advertisement = AdvertisementData(
+        local_name=name,
+        manufacturer_data={},
+        service_data={},
+        service_uuids=[],
+        tx_power=-127,
+        rssi=-60,
+        platform_data=(),
+    )
+    return BluetoothServiceInfoBleak(
+        name=name,
+        address=address,
+        rssi=-60,
+        manufacturer_data={},
+        service_data={},
+        service_uuids=[],
+        source="local",
+        device=device,
+        advertisement=advertisement,
+        connectable=True,
+        time=0.0,
+        tx_power=-127,
+    )
+
+
+async def test_bluetooth_discovery_flow(hass: HomeAssistant) -> None:
+    """A DS20 dock discovered via Bluetooth advances to the user step."""
+    info = _service_info(name="DS20-1234", address="AA:BB:CC:DD:EE:FF")
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_BLUETOOTH},
+        data=info,
+    )
+    # Bluetooth discovery advances straight to the user step to collect creds
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
+
+    with _patch_client(_client()), _patch_setup():
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_USERNAME: USER, CONF_PASSWORD: PASSWORD}
+        )
+        await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    # The MAC-derived unique id is set, and the discovered device is recorded.
+    entry = result["result"]
+    assert entry.unique_id == USER_ID
+    assert result["data"]["discovered_device_address"] == "AA:BB:CC:DD:EE:FF"
+    assert result["data"]["discovered_device_name"] == "DS20-1234"
+
+
+async def test_bluetooth_discovery_robot_name(hass: HomeAssistant) -> None:
+    """A non-DS20 advertisement is labelled as a Robot but still proceeds."""
+    info = _service_info(name="CCBA97932A96", address="CC:BA:97:93:2A:96")
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_BLUETOOTH},
+        data=info,
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"

@@ -29,3 +29,4 @@ jobs:
           python -m pytest tests/ -v
           --cov=custom_components/wybot
           --cov-report=term-missing
+          --cov-fail-under=95

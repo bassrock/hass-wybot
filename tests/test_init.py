@@ -96,3 +96,27 @@ async def test_setup_connection_error_is_retried(hass: HomeAssistant) -> None:
         await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
+
+
+async def test_update_listener_refreshes_wifi_credentials(hass: HomeAssistant) -> None:
+    """Updating options pushes new WiFi credentials into the coordinator."""
+    from custom_components.wybot import _async_update_listener
+    from custom_components.wybot.const import CONF_WIFI_PASSWORD, CONF_WIFI_SSID
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        unique_id=USER_ID,
+        data={
+            CONF_USERNAME: USER,
+            CONF_PASSWORD: PASSWORD,
+            CONF_WIFI_SSID: "net",
+            CONF_WIFI_PASSWORD: "pw",
+        },
+    )
+    entry.add_to_hass(hass)
+    coordinator = _fake_coordinator()
+    entry.runtime_data = coordinator
+
+    await _async_update_listener(hass, entry)
+
+    coordinator.set_wifi_credentials.assert_called_once_with("net", "pw")
