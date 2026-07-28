@@ -65,13 +65,16 @@
       "wifi_password_required": "WiFi password is required when WiFi SSID is provided"
     }
   },
-  "entity": {
+    "entity": {
     "binary_sensor": {
       "robot_charging": {
         "name": "Charging"
       },
       "dock_charging": {
         "name": "Charging"
+      },
+      "fully_charged": {
+        "name": "Fully charged"
       }
     },
     "button": {
@@ -87,7 +90,7 @@
         "name": "Dock battery"
       },
       "solar_energy": {
-        "name": "Solar energy harvested"
+        "name": "Working time"
       },
       "dock_type": {
         "name": "Dock type"
@@ -100,6 +103,41 @@
       },
       "data_source": {
         "name": "Data source"
+      },
+      "total_runtime": {
+        "name": "Total runtime"
+      },
+      "cycle_runtime": {
+        "name": "Cycle runtime"
+      },
+      "water_temperature": {
+        "name": "Water temperature"
+      },
+      "total_energy": {
+        "name": "Total energy"
+      },
+      "motor_pwm": {
+        "name": "Motor PWM"
+      },
+      "cleaning_mode": {
+        "name": "Cleaning mode"
+      },
+      "heavy_dirt": {
+        "name": "Heavy dirt mode"
+      },
+      "in_water": {
+        "name": "In water"
+      },
+      "sonar": {
+        "name": "Sonar"
+      },
+      "ph_value": {
+        "name": "pH"
+      }
+    },
+    "switch": {
+      "auto_run": {
+        "name": "Auto run"
       }
     }
   },
