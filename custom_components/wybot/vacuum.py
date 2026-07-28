@@ -307,6 +307,8 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
             | VacuumEntityFeature.RETURN_HOME
             | VacuumEntityFeature.START
             | VacuumEntityFeature.STOP
+            | VacuumEntityFeature.TURN_ON
+            | VacuumEntityFeature.TURN_OFF
         )
 
     async def _async_send_command(self, dp: GenericDP) -> None:
@@ -341,6 +343,18 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         """Start the vacuum cleaner."""
         await self._async_send_command(
             CleaningStatus(status=CleaningStatusMode.CLEANING)
+        )
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn on the vacuum cleaner (alias for start)."""
+        await self._async_send_command(
+            CleaningStatus(status=CleaningStatusMode.CLEANING)
+        )
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn off the vacuum cleaner (alias for stop)."""
+        await self._async_send_command(
+            CleaningStatus(status=CleaningStatusMode.STOPPED)
         )
 
     async def async_return_to_base(self, **kwargs: Any) -> None:
