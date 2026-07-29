@@ -301,6 +301,6 @@ class WyBotFullyChargedBinarySensor(WyBotBinarySensorBase):
                 attrs["charge_state"] = battery.charge_state.name
                 if battery.data and len(battery.data) >= 6:
                     attrs["solar_battery"] = int(battery.data[2:4], 16)
-                    attrs["robot_battery"] = battery.battery_level
+                    attrs["robot_battery"] = battery.robot_battery_level
         return attrs
 

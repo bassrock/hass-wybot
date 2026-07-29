@@ -226,13 +226,18 @@ class WyBotRobotBatterySensor(WyBotSensorBase):
 
     @property
     def native_value(self) -> int | None:
-        """Return the robot battery level as percentage."""
+        """Return the robot battery level as percentage.
+
+        On the F1, the robot battery byte only updates when physically plugged in.
+        When charge_state is NOT_PLUGGED_IN on the F1 (3-byte DP 50), the value is
+        stale — return None so HA shows "unknown" instead of a misleading percentage.
+        """
         if not self._data:
             return None
         battery = self._data.get_dp(Battery)
         if battery is None:
             return None
-        return battery.battery_level
+        return battery.robot_battery_level
 
 
 class WyBotSolarDockBatterySensor(WyBotDockSensorBase):
@@ -567,7 +572,7 @@ class WyBotF1SolarBatterySensor(WyBotSensorBase):
             if battery is not None:
                 attrs["raw_data"] = battery.data
                 attrs["charge_state"] = battery.charge_state.name
-                attrs["robot_battery"] = battery.battery_level
+                attrs["robot_battery"] = battery.robot_battery_level
         return attrs
 
 
