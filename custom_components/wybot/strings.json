@@ -72,6 +72,9 @@
       },
       "dock_charging": {
         "name": "Charging"
+      },
+      "fully_charged": {
+        "name": "Fully charged"
       }
     },
     "button": {
@@ -86,9 +89,6 @@
       "dock_battery": {
         "name": "Dock battery"
       },
-      "solar_energy": {
-        "name": "Solar energy harvested"
-      },
       "dock_type": {
         "name": "Dock type"
       },
@@ -100,6 +100,41 @@
       },
       "data_source": {
         "name": "Data source"
+      },
+      "total_runtime": {
+        "name": "Total runtime"
+      },
+      "cycle_runtime": {
+        "name": "Cycle runtime"
+      },
+      "total_energy": {
+        "name": "Total energy"
+      },
+      "motor_pwm": {
+        "name": "Motor PWM"
+      },
+      "cleaning_mode": {
+        "name": "Cleaning mode"
+      },
+      "heavy_dirt": {
+        "name": "Heavy dirt mode"
+      },
+      "in_water": {
+        "name": "In water"
+      },
+      "sonar": {
+        "name": "Sonar"
+      },
+      "ph_value": {
+        "name": "pH"
+      },
+      "working_time": {
+        "name": "Working time"
+      }
+    },
+    "switch": {
+      "auto_run": {
+        "name": "Auto run"
       }
     }
   },
@@ -112,6 +147,9 @@
     },
     "wifi_send_failed": {
       "message": "Failed to send WiFi credentials to dock {device} via Bluetooth."
+    },
+    "invalid_fan_speed": {
+      "message": "{fan_speed} is not a supported cleaning mode for this device. Supported modes: {fan_speed_list}."
     }
   }
 }

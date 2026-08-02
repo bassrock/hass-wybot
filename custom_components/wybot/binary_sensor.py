@@ -56,6 +56,7 @@ async def async_setup_entry(
                 [
                     WyBotRobotChargingBinarySensor(idx=device_id, coordinator=coordinator),
                     WyBotDockChargingBinarySensor(idx=device_id, coordinator=coordinator),
+                    WyBotFullyChargedBinarySensor(idx=device_id, coordinator=coordinator),
                 ]
             )
         if entities:
@@ -234,10 +235,15 @@ class WyBotDockChargingBinarySensor(WyBotDockBinarySensorBase):
         """Return True if the dock is charging (solar)."""
         if not self._data:
             return None
+        # DS20 dock: uses DP 222 (SolarStatus)
         solar_status = self._data.get_dp(SolarStatus)
-        if solar_status is None:
-            return None
-        return solar_status.is_charging
+        if solar_status is not None:
+            return solar_status.is_charging
+        # F1 fallback: DP 50 charge_state == CHARGING means solar is active
+        battery = self._data.get_dp(Battery)
+        if battery is not None:
+            return battery.charge_state == BatteryState.CHARGING
+        return None
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -254,3 +260,52 @@ class WyBotDockChargingBinarySensor(WyBotDockBinarySensorBase):
             if solar_status is not None:
                 attrs["raw_value"] = solar_status.data
         return attrs
+
+
+class WyBotFullyChargedBinarySensor(WyBotBinarySensorBase):
+    """Binary sensor for fully charged status.
+
+    Tracks charge_state from DP 50:
+    - 0 (NOT_PLUGGED_IN) = off
+    - 1 (CHARGING) = off
+    - 2 (CHARGED) = on
+    """
+
+    # Deliberately no device class: BATTERY_CHARGING would render this as
+    # "Charging"/"Not charging", which is the opposite of what it reports.
+    _attr_translation_key = "fully_charged"
+
+    @property
+    def unique_id(self) -> str:
+        """Return a unique ID."""
+        return f"wybot_{self._idx}_fully_charged"
+
+    @property
+    def name(self) -> str:
+        """Return the name of the binary sensor."""
+        return "Fully charged"
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return True when the battery reports a completed charge."""
+        if not self._data:
+            return None
+        battery = self._data.get_dp(Battery)
+        if battery is None:
+            return None
+        return battery.charge_state == BatteryState.CHARGED
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional state attributes."""
+        if not self._data:
+            return {}
+        battery = self._data.get_dp(Battery)
+        if battery is None:
+            return {}
+        attrs: dict[str, Any] = {"charge_state": battery.charge_state.name}
+        solar_battery = battery.solar_battery_level
+        if solar_battery is not None:
+            attrs["solar_battery"] = solar_battery
+        return attrs
+

@@ -45,7 +45,7 @@ async def test_async_setup_entry(hass: HomeAssistant) -> None:
     entry.runtime_data = coord
     added: list = []
     await async_setup_entry(hass, entry, lambda e: added.extend(e))
-    assert len(added) == 2
+    assert len(added) == 3
 
 
 async def test_robot_charging_on(hass: HomeAssistant) -> None:

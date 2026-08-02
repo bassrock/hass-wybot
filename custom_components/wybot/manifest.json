@@ -23,7 +23,7 @@
   ],
   "quality_scale": "platinum",
   "requirements": [
-    "pywybot==1.0.0"
+    "pywybot==1.3.0"
   ],
   "version": "3.3.0"
 }

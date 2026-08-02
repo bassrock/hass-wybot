@@ -62,10 +62,18 @@ def dp(cls, **kwargs):
     return cls(DP(**kwargs))
 
 
-def make_group(device_dps=None, docker_dps=None, with_docker=True, name="My Pool"):
+def make_group(
+    device_dps=None,
+    docker_dps=None,
+    with_docker=True,
+    name="My Pool",
+    device_type=None,
+):
     """Build a real ``Group`` with typed DP instances attached."""
     data = deepcopy(GROUP_DATA)
     data["name"] = name
+    if device_type is not None:
+        data["device"]["deviceType"] = device_type
     if not with_docker:
         data["docker"] = None
     group = Group(**data)

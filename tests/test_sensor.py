@@ -14,7 +14,7 @@ from custom_components.wybot.sensor import (
     WyBotLastMQTTCommunicationSensor,
     WyBotRobotBatterySensor,
     WyBotSolarDockBatterySensor,
-    WyBotSolarEnergySensor,
+    WyBotWorkingTimeSensor,
     async_setup_entry,
     format_mac,
 )
@@ -22,7 +22,7 @@ from wybot.dp_models import (
     Battery,
     DockInfo,
     SolarDockBattery,
-    SolarEnergyHarvested,
+    WorkingTime,
 )
 
 from wybot_platform_helpers import add_entity, dp, make_coordinator, make_group
@@ -37,7 +37,7 @@ def _robot_dps():
 def _dock_dps():
     return {
         "221": dp(SolarDockBattery, id=221, type=0, len=3, data="01480a"),
-        "131": dp(SolarEnergyHarvested, id=131, type=2, len=4, data="e8030000"),
+        "131": dp(WorkingTime, id=131, type=2, len=4, data="e8030000"),
         "214": dp(DockInfo, id=214, type=4, len=1, data="05"),
     }
 
@@ -138,25 +138,25 @@ async def test_solar_dock_battery_dp_missing(hass: HomeAssistant) -> None:
     assert ent.native_value is None
 
 
-async def test_solar_energy_sensor(hass: HomeAssistant) -> None:
+async def test_working_time_sensor(hass: HomeAssistant) -> None:
     coord, _, _ = _coord(hass)
-    ent = WyBotSolarEnergySensor(idx=IDX, coordinator=coord)
+    ent = WyBotWorkingTimeSensor(idx=IDX, coordinator=coord)
     assert ent.native_value == 1000
-    assert ent.unique_id == "wybot_grp1_solar_energy"
-    assert ent.name == "Energy harvested"
+    assert ent.unique_id == "wybot_grp1_working_time"
+    assert ent.name == "Working time"
 
 
-async def test_solar_energy_no_data(hass: HomeAssistant) -> None:
+async def test_working_time_no_data(hass: HomeAssistant) -> None:
     coord, _, _ = _coord(hass)
-    ent = WyBotSolarEnergySensor(idx=IDX, coordinator=coord)
+    ent = WyBotWorkingTimeSensor(idx=IDX, coordinator=coord)
     ent._data = None
     assert ent.native_value is None
 
 
-async def test_solar_energy_dp_missing(hass: HomeAssistant) -> None:
+async def test_working_time_dp_missing(hass: HomeAssistant) -> None:
     group = make_group(device_dps={}, docker_dps={})
     coord, _ = make_coordinator(hass, {IDX: group})
-    ent = WyBotSolarEnergySensor(idx=IDX, coordinator=coord)
+    ent = WyBotWorkingTimeSensor(idx=IDX, coordinator=coord)
     assert ent.native_value is None
 
 
@@ -218,8 +218,8 @@ async def test_last_ble_communication_no_docker(hass: HomeAssistant) -> None:
     coord._last_ble_poll["dev1"] = now
     ent = WyBotLastBLECommunicationSensor(idx=IDX, coordinator=coord)
     assert ent.native_value == now
-    # No docker -> extra attrs empty.
-    assert ent.extra_state_attributes == {}
+    # A dockless robot (the F1) is tracked under its own device id.
+    assert ent.extra_state_attributes == {"ble_available": None}
 
 
 async def test_last_ble_communication_no_data(hass: HomeAssistant) -> None:
@@ -249,7 +249,7 @@ async def test_last_mqtt_communication_no_docker(hass: HomeAssistant) -> None:
     coord._last_mqtt_data["dev1"] = now
     ent = WyBotLastMQTTCommunicationSensor(idx=IDX, coordinator=coord)
     assert ent.native_value == now
-    assert ent.extra_state_attributes == {}
+    assert ent.extra_state_attributes == {"mqtt_connected": False}
 
 
 async def test_last_mqtt_communication_no_data(hass: HomeAssistant) -> None:
@@ -302,8 +302,10 @@ async def test_data_source_sensor_no_docker_uses_device(hass: HomeAssistant) -> 
     ent = WyBotDataSourceSensor(idx=IDX, coordinator=coord)
     assert ent.native_value == "Bluetooth"
     assert ent.icon == "mdi:bluetooth"
-    # No docker -> extra attrs empty.
-    assert ent.extra_state_attributes == {}
+    # A dockless robot (the F1) is tracked under its own device id.
+    attrs = ent.extra_state_attributes
+    assert attrs["ble_available"] is None
+    assert attrs["mqtt_connected"] is False
 
 
 async def test_data_source_sensor_no_data(hass: HomeAssistant) -> None:

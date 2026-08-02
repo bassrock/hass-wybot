@@ -16,11 +16,43 @@
           "Bluetooth": "mdi:bluetooth",
           "Cloud (MQTT)": "mdi:cloud"
         }
+      },
+      "working_time": {
+        "default": "mdi:timer-outline"
+      },
+      "cleaning_mode": {
+        "default": "mdi:broom"
+      },
+      "total_runtime": {
+        "default": "mdi:timer-sand"
+      },
+      "cycle_runtime": {
+        "default": "mdi:timer-play-outline"
+      },
+      "motor_pwm": {
+        "default": "mdi:engine-outline"
+      },
+      "heavy_dirt": {
+        "default": "mdi:liquid-spot"
+      },
+      "in_water": {
+        "default": "mdi:waves"
+      },
+      "sonar": {
+        "default": "mdi:radar"
+      },
+      "ph_value": {
+        "default": "mdi:ph"
       }
     },
     "button": {
       "wifi_reconfigure": {
         "default": "mdi:wifi-cog"
+      }
+    },
+    "switch": {
+      "auto_run": {
+        "default": "mdi:robot-outline"
       }
     }
   }

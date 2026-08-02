@@ -12,7 +12,14 @@ from wybot.ble_client import WyBotBLEClient
 from wybot.dp_models import GenericDP
 from wybot.exceptions import WybotAuthError, WybotConnectionError
 from wybot.http_client import WyBotHTTPClient
-from wybot.models import Command, Device, Docker, Group
+from wybot.models import (
+    Command,
+    Device,
+    Docker,
+    Group,
+    MQTTMessage,
+    MQTTMessageKind,
+)
 from wybot.mqtt_client import WyBotMQTTClient
 
 from .bluetooth_adapter import HomeAssistantBluetoothAdapter
@@ -20,6 +27,7 @@ from .const import (
     BLE_MAX_CONSECUTIVE_FAILURES,
     CONF_WIFI_PASSWORD,
     CONF_WIFI_SSID,
+    F1_DEVICE_TYPE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -55,7 +63,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
     _http_failure_count: int = 0
     _mqtt_failure_count: int = 0
     _last_status_query_time: float = 0.0
-    _online_devices: set[str] = set()
+    _online_devices: set[str]  # device ids currently reported online
     _initial_query_start_time: float = 0.0
     _ble_wake_enabled: bool = True
 
@@ -110,6 +118,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
         self._last_ble_poll = {}
         self._data_source = {}
         self._ble_available = {}
+        # Was a class-level set(), so every coordinator shared one instance and
+        # online state leaked between config entries and across reloads.
+        self._online_devices = set()
 
         # Initialize BLE command tracking
         self._ble_command_failures = {}
@@ -567,145 +578,84 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     device.docker.docker_id
                 )
 
-    def on_message(self, topic: str, data: dict[str, Any]) -> None:
-        """Handle a message from MQTT."""
-        data_updated = False
+    def _apply_online_status(self, deviceId: str, is_online: bool) -> None:
+        """Record a device's online status from a will message."""
+        group = self.get_group(deviceId)
+        if group is None:
+            return
+        if group.device.device_id == deviceId:
+            group.device.online = is_online
+        elif group.docker is not None and group.docker.docker_id == deviceId:
+            group.docker.online = is_online
+        self.data[group.id] = group
+        if is_online:
+            self._online_devices.add(deviceId)
+            _LOGGER.debug("Device %s came online, querying status", deviceId)
+            # on_message runs in the event loop (from the MQTT listen task) but
+            # is sync; schedule the async status query.
+            self.hass.async_create_task(
+                self.wybot_mqtt_client.ensure_device_sends_statuses(deviceId)
+            )
+        else:
+            self._online_devices.discard(deviceId)
 
-        _LOGGER.debug(
-            "MQTT on_message - Topic: %s, cmd: %s",
-            topic,
-            data.get("cmd") if isinstance(data, dict) else "N/A",
-        )
+    def _merge_reported_dps(self, deviceId: str, command: Command, source: str) -> None:
+        """Merge DPs reported for ``deviceId`` into whichever half of the group owns it."""
+        group = self.get_group(deviceId)
+        if group is None:
+            return
+        incoming_dps: dict[str, Any] = command.get_dps_as_keyed_dict()
+        if group.docker is not None and group.docker.docker_id == deviceId:
+            group.docker.dps = {**group.docker.dps, **incoming_dps}
+            _LOGGER.debug("Updated docker %s DPs from %s", deviceId, source)
+        elif group.device is not None:
+            group.device.dps = {**group.device.dps, **incoming_dps}
+            _LOGGER.debug("Updated device %s DPs from %s", deviceId, source)
+        self.data[group.id] = group
 
-        if topic.startswith("/will/"):
-            deviceId = topic[6:]
-            is_online = data.get("online") == "1"
+    def on_message(self, message: MQTTMessage) -> None:
+        """Handle a parsed MQTT message from pywybot.
+
+        pywybot owns the broker's topic layout and payload parsing, so this
+        only reacts to the semantic kind: an online/offline flag or reported
+        device DPs.
+        """
+        deviceId = message.device_id
+        if deviceId is None:
+            _LOGGER.debug("Ignoring MQTT message on %s", message.topic)
+            return
+
+        _LOGGER.debug("MQTT on_message - kind: %s, device: %s", message.kind, deviceId)
+
+        # Any message on a device topic proves the cloud path is alive.
+        self._record_mqtt_data_received(deviceId)
+
+        if message.kind is MQTTMessageKind.WILL:
+            if message.online is None:
+                _LOGGER.debug("Will message for %s carried no online flag", deviceId)
+                return
             _LOGGER.debug(
                 "Device %s online status: %s",
                 deviceId,
-                "online" if is_online else "offline",
+                "online" if message.online else "offline",
             )
-            # Record that we received MQTT data from this device
-            self._record_mqtt_data_received(deviceId)
-            # Update device online status
-            group = self.get_group(deviceId)
-            if group is not None:
-                if group.device.device_id == deviceId:
-                    group.device.online = is_online
-                elif group.docker is not None and group.docker.docker_id == deviceId:
-                    group.docker.online = is_online
-                self.data[group.id] = group
-                # Track online devices
-                if is_online:
-                    self._online_devices.add(deviceId)
-                    _LOGGER.debug("Device %s came online, querying status", deviceId)
-                    # on_message runs in the event loop (from the MQTT listen
-                    # task) but is sync; schedule the async status query.
-                    self.hass.async_create_task(
-                        self.wybot_mqtt_client.ensure_device_sends_statuses(deviceId)
-                    )
-                else:
-                    self._online_devices.discard(deviceId)
-            # Will messages indicate device availability changes, always trigger update
-            data_updated = True
-
-        if topic.startswith("/device/DATA/send_transparent_data/"):
-            deviceId = topic[35:]
-            # Record that we received MQTT data from this device
-            self._record_mqtt_data_received(deviceId)
-            _LOGGER.debug(
-                "Processing send_transparent_data for device %s",
-                deviceId,
-            )
-            try:
-                command_response = Command(**data)
-                _LOGGER.debug(
-                    "Parsed Command: cmd=%s, dp_count=%s",
-                    command_response.cmd,
-                    len(command_response.dp),
-                )
-            except Exception as err:
-                _LOGGER.error("Failed to parse Command from data: %s, error: %s", data, err)
-                command_response = None
-
-            if command_response is None:
-                return
-
-            group = self.get_group(deviceId)
-            incoming_dps: dict[str, Any] = command_response.get_dps_as_keyed_dict()
-            if (
-                group is not None
-                and group.docker is not None
-                and group.docker.docker_id == deviceId
-            ):
-                group.docker.dps = {
-                    **group.docker.dps,
-                    **incoming_dps,
-                }
-                _LOGGER.debug(
-                    "Updated docker %s DPs from send_transparent_data",
-                    deviceId,
-                )
-                data_updated = True
-            elif group is not None and group.device is not None:
-                group.device.dps = {
-                    **group.device.dps,
-                    **incoming_dps,
-                }
-                _LOGGER.debug(
-                    "Updated device %s DPs from send_transparent_data",
-                    deviceId,
-                )
-                data_updated = True
-            if group is not None:
-                self.data[group.id] = group
-
-        if topic.startswith("/device/DATA/recv_transparent_query_data/"):
-            deviceId = topic[41:]
-            # Record that we received MQTT data from this device
-            self._record_mqtt_data_received(deviceId)
-            command_response = Command(**data)
-            _LOGGER.debug("Query CMD ---- %s ----- %s", deviceId, command_response)
-
-        if topic.startswith("/device/DATA/recv_transparent_cmd_data/"):
-            deviceId = topic[39:]
-            # Record that we received MQTT data from this device
-            self._record_mqtt_data_received(deviceId)
-            command_response = Command(**data)
-            _LOGGER.debug("SEND CMD ---- %s ----- %s", deviceId, command_response)
-
-            # Update device DPs with the received data (cmd=4 contains actual values)
-            group = self.get_group(deviceId)
-            if group is not None:
-                cmd_dps: dict[str, Any] = command_response.get_dps_as_keyed_dict()
-                if (
-                    group.docker is not None
-                    and group.docker.docker_id == deviceId
-                ):
-                    group.docker.dps = {
-                        **group.docker.dps,
-                        **cmd_dps,
-                    }
-                    _LOGGER.debug(
-                        "Updated docker %s DPs from cmd_data",
-                        deviceId,
-                    )
-                elif group.device is not None:
-                    group.device.dps = {
-                        **group.device.dps,
-                        **cmd_dps,
-                    }
-                    _LOGGER.debug(
-                        "Updated device %s DPs from cmd_data",
-                        deviceId,
-                    )
-                self.data[group.id] = group
-                data_updated = True
-
-        # Always trigger update when we receive MQTT messages to ensure state is written
-        # This ensures history is recorded even if computed state values don't change
-        if data_updated or topic.startswith("/device/DATA/"):
+            self._apply_online_status(deviceId, message.online)
+            # Availability changed, so always publish.
             self.hass.add_job(self.async_set_updated_data, self.data)
+            return
+
+        if message.command is not None:
+            if message.kind is MQTTMessageKind.DATA_REPORT:
+                self._merge_reported_dps(deviceId, message.command, "send_transparent_data")
+            elif message.kind is MQTTMessageKind.COMMAND_RESPONSE:
+                # cmd=4 responses carry the actual values.
+                self._merge_reported_dps(deviceId, message.command, "cmd_data")
+            elif message.kind is MQTTMessageKind.QUERY_RESPONSE:
+                _LOGGER.debug("Query CMD ---- %s ----- %s", deviceId, message.command)
+
+        # Publish on every device message, even when no DP changed, so history
+        # keeps being recorded.
+        self.hass.add_job(self.async_set_updated_data, self.data)
 
     def get_device_or_docker(self, deviceId: str) -> Device | Docker | None:
         """Loops through the self.data and find the device matching the deviceId"""
@@ -987,3 +937,14 @@ class WyBotCoordinator(DataUpdateCoordinator):
         Right now we only support WyBot vacuums so we return everything, but this could be expanded
         """
         return [deviceId for [deviceId, device] in self.data.items()]
+
+    def is_f1(self, idx: str) -> bool:
+        """Return whether the group at ``idx`` is an F1 skimmer.
+
+        Platforms use this to skip creating F1-only entities on DS20 robots,
+        which would otherwise show up permanently unknown.
+        """
+        group = self.data.get(idx) if self.data else None
+        if group is None or group.device is None:
+            return False
+        return group.device.device_type == F1_DEVICE_TYPE
