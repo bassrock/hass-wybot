@@ -26,6 +26,7 @@ from custom_components.wybot.wybot_coordinator import (
 from wybot import WybotAuthError
 from wybot.dp_models import DP, CleaningStatus
 from wybot.models import Group
+from wybot.mqtt_client import WyBotMQTTClient
 
 DEVICE_ID = "dev123"
 DOCKER_ID = "dock456"
@@ -600,10 +601,22 @@ def _cmd(dp_id: int = 0, data: str = "03") -> dict:
     return {"cmd": 5, "ts": 0, "dp": [{"id": dp_id, "type": 4, "len": 1, "data": data}]}
 
 
+def _msg(topic: str, payload):
+    """Parse a raw topic and payload the way the MQTT receive loop does.
+
+    Going through pywybot's own parser rather than hand-building an
+    ``MQTTMessage`` keeps these tests honest about the library contract: when
+    the callback signature changed in pywybot 1.2.0, tests that called
+    ``on_message(topic, data)`` directly kept passing while the real path was
+    broken.
+    """
+    return WyBotMQTTClient(lambda _message: None)._parse_message(topic, payload)
+
+
 async def test_on_message_will_online(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
     coord.data = {GROUP_ID: make_group()}
-    coord.on_message(f"/will/{DEVICE_ID}", {"online": "1"})
+    coord.on_message(_msg(f"/will/{DEVICE_ID}", {"online": "1"}))
     assert DEVICE_ID in coord._online_devices
     assert coord.data[GROUP_ID].device.online is True
     coord.wybot_mqtt_client.ensure_device_sends_statuses.assert_called_with(DEVICE_ID)
@@ -615,7 +628,7 @@ async def test_on_message_will_offline_docker(hass: HomeAssistant) -> None:
     group = make_group()
     coord.data = {GROUP_ID: group}
     coord._online_devices.add(DOCKER_ID)
-    coord.on_message(f"/will/{DOCKER_ID}", {"online": "0"})
+    coord.on_message(_msg(f"/will/{DOCKER_ID}", {"online": "0"}))
     assert DOCKER_ID not in coord._online_devices
     assert coord.data[GROUP_ID].docker.online is False
     await hass.async_block_till_done()
@@ -625,7 +638,34 @@ async def test_on_message_will_unknown_device(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
     coord.data = {GROUP_ID: make_group()}
     # unknown device id -> group is None, but data_updated still True
-    coord.on_message("/will/unknown", {"online": "1"})
+    coord.on_message(_msg("/will/unknown", {"online": "1"}))
+    await hass.async_block_till_done()
+
+
+async def test_on_message_unrelated_topic_ignored(hass: HomeAssistant) -> None:
+    """A topic pywybot cannot attribute to a device carries no device id."""
+    coord = make_coordinator(hass)
+    coord.data = {GROUP_ID: make_group()}
+    coord.on_message(_msg("/ota/progress", {"pct": 10}))
+    # Nothing to attribute it to, so no device is marked online.
+    assert coord._online_devices == set()
+    await hass.async_block_till_done()
+
+
+async def test_on_message_will_without_online_flag(hass: HomeAssistant) -> None:
+    """A non-JSON will payload leaves online unset; treat it as no information."""
+    coord = make_coordinator(hass)
+    coord.data = {GROUP_ID: make_group()}
+    coord.on_message(_msg(f"/will/{DEVICE_ID}", b"not-json"))
+    assert DEVICE_ID not in coord._online_devices
+    await hass.async_block_till_done()
+
+
+async def test_on_message_dps_for_unknown_device(hass: HomeAssistant) -> None:
+    """DPs for a device absent from coordinator data are dropped, not crashed on."""
+    coord = make_coordinator(hass)
+    coord.data = {GROUP_ID: make_group()}
+    coord.on_message(_msg("/device/DATA/send_transparent_data/nope", _cmd(11, "00")))
     await hass.async_block_till_done()
 
 
@@ -633,9 +673,7 @@ async def test_on_message_send_transparent_data_docker(hass: HomeAssistant) -> N
     coord = make_coordinator(hass)
     group = make_group()
     coord.data = {GROUP_ID: group}
-    coord.on_message(
-        f"/device/DATA/send_transparent_data/{DOCKER_ID}", _cmd(11, "00")
-    )
+    coord.on_message(_msg(f"/device/DATA/send_transparent_data/{DOCKER_ID}", _cmd(11, "00")))
     assert "11" in coord.data[GROUP_ID].docker.dps
     await hass.async_block_till_done()
 
@@ -644,9 +682,7 @@ async def test_on_message_send_transparent_data_device(hass: HomeAssistant) -> N
     coord = make_coordinator(hass)
     group = make_group(with_docker=False)
     coord.data = {GROUP_ID: group}
-    coord.on_message(
-        f"/device/DATA/send_transparent_data/{DEVICE_ID}", _cmd(1, "01")
-    )
+    coord.on_message(_msg(f"/device/DATA/send_transparent_data/{DEVICE_ID}", _cmd(1, "01")))
     assert "1" in coord.data[GROUP_ID].device.dps
     await hass.async_block_till_done()
 
@@ -655,18 +691,14 @@ async def test_on_message_send_transparent_data_bad(hass: HomeAssistant) -> None
     coord = make_coordinator(hass)
     coord.data = {GROUP_ID: make_group()}
     # invalid Command payload -> parse fails -> returns early
-    coord.on_message(
-        f"/device/DATA/send_transparent_data/{DOCKER_ID}", {"garbage": True}
-    )
+    coord.on_message(_msg(f"/device/DATA/send_transparent_data/{DOCKER_ID}", {"garbage": True}))
     await hass.async_block_till_done()
 
 
 async def test_on_message_recv_query_data(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
     coord.data = {GROUP_ID: make_group()}
-    coord.on_message(
-        f"/device/DATA/recv_transparent_query_data/{DOCKER_ID}", _cmd()
-    )
+    coord.on_message(_msg(f"/device/DATA/recv_transparent_query_data/{DOCKER_ID}", _cmd()))
     await hass.async_block_till_done()
 
 
@@ -674,9 +706,7 @@ async def test_on_message_recv_cmd_data_docker(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
     group = make_group()
     coord.data = {GROUP_ID: group}
-    coord.on_message(
-        f"/device/DATA/recv_transparent_cmd_data/{DOCKER_ID}", _cmd(11, "01")
-    )
+    coord.on_message(_msg(f"/device/DATA/recv_transparent_cmd_data/{DOCKER_ID}", _cmd(11, "01")))
     assert "11" in coord.data[GROUP_ID].docker.dps
     await hass.async_block_till_done()
 
@@ -685,9 +715,7 @@ async def test_on_message_recv_cmd_data_device(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
     group = make_group(with_docker=False)
     coord.data = {GROUP_ID: group}
-    coord.on_message(
-        f"/device/DATA/recv_transparent_cmd_data/{DEVICE_ID}", _cmd(1, "01")
-    )
+    coord.on_message(_msg(f"/device/DATA/recv_transparent_cmd_data/{DEVICE_ID}", _cmd(1, "01")))
     assert "1" in coord.data[GROUP_ID].device.dps
     await hass.async_block_till_done()
 
