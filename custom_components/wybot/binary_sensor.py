@@ -240,7 +240,6 @@ class WyBotDockChargingBinarySensor(WyBotDockBinarySensorBase):
         if solar_status is not None:
             return solar_status.is_charging
         # F1 fallback: DP 50 charge_state == CHARGING means solar is active
-        from wybot.dp_models import BatteryState
         battery = self._data.get_dp(Battery)
         if battery is not None:
             return battery.charge_state == BatteryState.CHARGING
@@ -272,19 +271,23 @@ class WyBotFullyChargedBinarySensor(WyBotBinarySensorBase):
     - 2 (CHARGED) = on
     """
 
-    _attr_device_class = BinarySensorDeviceClass.BATTERY_CHARGING
+    # Deliberately no device class: BATTERY_CHARGING would render this as
+    # "Charging"/"Not charging", which is the opposite of what it reports.
     _attr_translation_key = "fully_charged"
 
     @property
     def unique_id(self) -> str:
+        """Return a unique ID."""
         return f"wybot_{self._idx}_fully_charged"
 
     @property
     def name(self) -> str:
+        """Return the name of the binary sensor."""
         return "Fully charged"
 
     @property
     def is_on(self) -> bool | None:
+        """Return True when the battery reports a completed charge."""
         if not self._data:
             return None
         battery = self._data.get_dp(Battery)
@@ -293,14 +296,16 @@ class WyBotFullyChargedBinarySensor(WyBotBinarySensorBase):
         return battery.charge_state == BatteryState.CHARGED
 
     @property
-    def extra_state_attributes(self) -> dict:
-        attrs = {}
-        if self._data:
-            battery = self._data.get_dp(Battery)
-            if battery is not None:
-                attrs["charge_state"] = battery.charge_state.name
-                if battery.data and len(battery.data) >= 6:
-                    attrs["solar_battery"] = int(battery.data[2:4], 16)
-                    attrs["robot_battery"] = battery.robot_battery_level
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return additional state attributes."""
+        if not self._data:
+            return {}
+        battery = self._data.get_dp(Battery)
+        if battery is None:
+            return {}
+        attrs: dict[str, Any] = {"charge_state": battery.charge_state.name}
+        solar_battery = battery.solar_battery_level
+        if solar_battery is not None:
+            attrs["solar_battery"] = solar_battery
         return attrs
 

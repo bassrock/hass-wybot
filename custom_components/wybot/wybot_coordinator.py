@@ -20,6 +20,7 @@ from .const import (
     BLE_MAX_CONSECUTIVE_FAILURES,
     CONF_WIFI_PASSWORD,
     CONF_WIFI_SSID,
+    F1_DEVICE_TYPE,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -987,3 +988,14 @@ class WyBotCoordinator(DataUpdateCoordinator):
         Right now we only support WyBot vacuums so we return everything, but this could be expanded
         """
         return [deviceId for [deviceId, device] in self.data.items()]
+
+    def is_f1(self, idx: str) -> bool:
+        """Return whether the group at ``idx`` is an F1 skimmer.
+
+        Platforms use this to skip creating F1-only entities on DS20 robots,
+        which would otherwise show up permanently unknown.
+        """
+        group = self.data.get(idx) if self.data else None
+        if group is None or group.device is None:
+            return False
+        return group.device.device_type == F1_DEVICE_TYPE

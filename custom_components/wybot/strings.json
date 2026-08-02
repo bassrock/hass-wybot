@@ -65,7 +65,7 @@
       "wifi_password_required": "WiFi password is required when WiFi SSID is provided"
     }
   },
-    "entity": {
+  "entity": {
     "binary_sensor": {
       "robot_charging": {
         "name": "Charging"
@@ -89,9 +89,6 @@
       "dock_battery": {
         "name": "Dock battery"
       },
-      "solar_energy": {
-        "name": "Working time"
-      },
       "dock_type": {
         "name": "Dock type"
       },
@@ -109,9 +106,6 @@
       },
       "cycle_runtime": {
         "name": "Cycle runtime"
-      },
-      "water_temperature": {
-        "name": "Water temperature"
       },
       "total_energy": {
         "name": "Total energy"
@@ -133,6 +127,9 @@
       },
       "ph_value": {
         "name": "pH"
+      },
+      "working_time": {
+        "name": "Working time"
       }
     },
     "switch": {
@@ -150,6 +147,9 @@
     },
     "wifi_send_failed": {
       "message": "Failed to send WiFi credentials to dock {device} via Bluetooth."
+    },
+    "invalid_fan_speed": {
+      "message": "{fan_speed} is not a supported cleaning mode for this device. Supported modes: {fan_speed_list}."
     }
   }
 }

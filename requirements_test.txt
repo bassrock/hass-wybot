@@ -5,7 +5,7 @@ pytest-cov
 
 # The WyBot client library (also declared in manifest.json requirements).
 # Pulls in aiohttp, aiomqtt, bleak, bleak-retry-connector, and pydantic.
-pywybot==1.0.0
+pywybot==1.3.0
 
 # Transitive requirements pulled in by `homeassistant.components.bluetooth`
 # (and the usb component it imports) when the wybot package is loaded.

@@ -12,7 +12,7 @@ from homeassistant.components.vacuum import (
     VacuumEntityFeature,
 )
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
@@ -41,6 +41,17 @@ PARALLEL_UPDATES = 1
 
 # Force state write every 5 minutes to ensure history is recorded
 FORCE_STATE_WRITE_INTERVAL = timedelta(minutes=5)
+
+
+def _activity_from_cleaning_status(
+    status: CleaningStatusMode,
+) -> VacuumActivity | None:
+    """Map a cleaning status to a vacuum activity, if it maps to one."""
+    if status in (CleaningStatusMode.CLEANING, CleaningStatusMode.STARTING):
+        return VacuumActivity.CLEANING
+    if status == CleaningStatusMode.STOPPED:
+        return VacuumActivity.PAUSED
+    return None
 
 
 def format_mac(mac: str) -> str:
@@ -242,17 +253,16 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         if dock_status is not None and dock_status.status == DockStatus.RETURNING:
             return VacuumActivity.RETURNING
 
-        # Check cleaning status BEFORE dock status
-        # The F1 reports DP 11 = DOCKED even while cleaning (no real dock),
-        # so we must check DP 0 first to avoid showing "docked" during cleaning
-        if cleaning_status is not None:
-            if cleaning_status.status in (
-                CleaningStatusMode.CLEANING,
-                CleaningStatusMode.STARTING,
-            ):
-                return VacuumActivity.CLEANING
-            if cleaning_status.status == CleaningStatusMode.STOPPED:
-                return VacuumActivity.PAUSED
+        # The F1 has no dock but still reports DP 11 = DOCKED while it is out
+        # skimming, so on that model the cleaning status has to win. DS20
+        # robots keep the original dock-first order, where a docked robot that
+        # still reports STOPPED must read as DOCKED rather than PAUSED.
+        is_f1 = self._coordinator.is_f1(self._idx)
+
+        if is_f1 and cleaning_status is not None:
+            activity = _activity_from_cleaning_status(cleaning_status.status)
+            if activity is not None:
+                return activity
 
         # Check if docked - use dock status, dock connection status, or battery charging state
         is_docked = False
@@ -263,23 +273,28 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         elif battery is not None:
             is_docked = battery.charge_state in (BatteryState.CHARGING, BatteryState.CHARGED)
 
+        if is_docked and not is_f1:
+            return VacuumActivity.DOCKED
+
+        if cleaning_status is not None:
+            activity = _activity_from_cleaning_status(cleaning_status.status)
+            if activity is not None:
+                return activity
+            # The F1 parks itself in standby (0x0f) rather than reporting a
+            # dedicated idle status, which pywybot surfaces as UNKNOWN.
+            if is_f1 and cleaning_status.status == CleaningStatusMode.UNKNOWN:
+                return VacuumActivity.IDLE
+
         if is_docked:
             return VacuumActivity.DOCKED
 
-        # F1-specific: 0x0f (15) = IDLE/STANDBY
-        if cleaning_status is not None and cleaning_status.status == CleaningStatusMode.UNKNOWN:
-            return VacuumActivity.IDLE if hasattr(VacuumActivity, 'IDLE') else None
-
         return None
-
-    # F1-specific cleaning modes (values 14-15, outside DS20's 0-6 range)
-    F1_CLEANING_MODES = {14: "Smart", 15: "Standard"}
 
     @property
     def fan_speed_list(self) -> list[str]:
         """Return supported cleaning modes."""
-        if self._data and self._data.device and self._data.device.device_type == "WYF1":
-            return ["Standard", "Smart"]
+        if self._coordinator.is_f1(self._idx):
+            return list(CleaningMode.F1_CLEANING_MODES.values())
         return CleaningMode.CLEANING_MODES
 
     @property
@@ -290,14 +305,12 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         fan_speed = self._data.get_dp(CleaningMode)
         if fan_speed is None or fan_speed.data is None:
             return None
-        mode_val = int(fan_speed.data, 16)
-        # F1 modes
-        if mode_val in self.F1_CLEANING_MODES:
-            return self.F1_CLEANING_MODES[mode_val]
-        # DS20 modes
-        if mode_val < len(CleaningMode.CLEANING_MODES):
-            return fan_speed.cleaning_mode
-        return None
+        mode = fan_speed.cleaning_mode
+        # pywybot returns "Unknown (n)" for values it cannot name; surface that
+        # as no reading rather than an entry absent from fan_speed_list.
+        if mode not in self.fan_speed_list:
+            return None
+        return mode
 
     @property
     def supported_features(self) -> VacuumEntityFeature:
@@ -307,8 +320,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
             | VacuumEntityFeature.RETURN_HOME
             | VacuumEntityFeature.START
             | VacuumEntityFeature.STOP
-            | VacuumEntityFeature.TURN_ON
-            | VacuumEntityFeature.TURN_OFF
         )
 
     async def _async_send_command(self, dp: GenericDP) -> None:
@@ -324,14 +335,17 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
 
     async def async_set_fan_speed(self, fan_speed: str, **kwargs: Any) -> None:
         """Set the fan speed of the vacuum cleaner."""
-        # F1-specific modes
-        f1_mode_map = {"Standard": 15, "Smart": 14}
-        if fan_speed in f1_mode_map:
-            from wybot.dp_models import DP
-            dp = CleaningMode(data=DP(id=1, type=4, len=1, data=f"{f1_mode_map[fan_speed]:02x}"))
-            await self._async_send_command(dp)
-        else:
-            await self._async_send_command(CleaningMode(mode=fan_speed))
+        if fan_speed not in self.fan_speed_list:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="invalid_fan_speed",
+                translation_placeholders={
+                    "fan_speed": fan_speed,
+                    "fan_speed_list": ", ".join(self.fan_speed_list),
+                },
+            )
+        # pywybot's setter resolves both the DS20 and F1 mode names.
+        await self._async_send_command(CleaningMode(mode=fan_speed))
 
     async def async_stop(self, **kwargs: Any) -> None:
         """Stop the vacuum cleaner."""
@@ -343,18 +357,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         """Start the vacuum cleaner."""
         await self._async_send_command(
             CleaningStatus(status=CleaningStatusMode.CLEANING)
-        )
-
-    async def async_turn_on(self, **kwargs: Any) -> None:
-        """Turn on the vacuum cleaner (alias for start)."""
-        await self._async_send_command(
-            CleaningStatus(status=CleaningStatusMode.CLEANING)
-        )
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """Turn off the vacuum cleaner (alias for stop)."""
-        await self._async_send_command(
-            CleaningStatus(status=CleaningStatusMode.STOPPED)
         )
 
     async def async_return_to_base(self, **kwargs: Any) -> None:

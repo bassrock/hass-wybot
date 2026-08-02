@@ -9,17 +9,18 @@ from __future__ import annotations
 import logging
 from typing import Any, cast
 
-from homeassistant.components.switch import SwitchEntity, SwitchDeviceClass
+from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
-from homeassistant.exceptions import HomeAssistantError
 
 from . import WyBotConfigEntry
 from .const import DOMAIN, MANUFACTURER
 from .wybot_coordinator import WyBotCoordinator
-from wybot.dp_models import GenericDP, DP
+
+from wybot.dp_models import DP, AutoRunMode, GenericDP
 from wybot.models import Group
 
 _LOGGER = logging.getLogger(__name__)
@@ -50,9 +51,11 @@ async def async_setup_entry(
             if device_id in known:
                 continue
             known.add(device_id)
-            entities.append(
-                WyBotF1AutoRunSwitch(idx=device_id, coordinator=coordinator)
-            )
+            # Auto-run is an F1 feature; DS20 robots ignore DP 207 entirely.
+            if coordinator.is_f1(device_id):
+                entities.append(
+                    WyBotF1AutoRunSwitch(idx=device_id, coordinator=coordinator)
+                )
         if entities:
             async_add_entities(entities)
 
@@ -132,18 +135,6 @@ class WyBotSwitchBase(SwitchEntity, CoordinatorEntity[WyBotCoordinator]):
         return cast(DeviceInfo, info_kwargs)
 
 
-def _get_dp_raw(group: Group | None, dp_id: str) -> str | None:
-    """Get raw DP data hex string from device or docker."""
-    if not group:
-        return None
-    dp = group.device.dps.get(str(dp_id)) if group.device else None
-    if dp is None and group.docker:
-        dp = group.docker.dps.get(str(dp_id))
-    if dp is None or not dp.data:
-        return None
-    return dp.data
-
-
 class WyBotF1AutoRunSwitch(WyBotSwitchBase):
     """Switch for F1 auto-run mode (DP 207 / 0xCF).
 
@@ -153,58 +144,44 @@ class WyBotF1AutoRunSwitch(WyBotSwitchBase):
 
     _attr_device_class = SwitchDeviceClass.SWITCH
     _attr_translation_key = "auto_run"
-    _attr_icon = "mdi:robot"
 
     @property
     def unique_id(self) -> str:
+        """Return a unique ID."""
         return f"wybot_{self._idx}_f1_auto_run_switch"
 
     @property
     def name(self) -> str:
+        """Return the name of the switch."""
         return "Auto run"
 
     @property
     def is_on(self) -> bool | None:
+        """Return whether auto-run is enabled."""
         if not self._data:
             return None
-        dp = _get_dp_raw(self._data, "207")
-        if dp is None:
+        auto_run = self._data.get_dp(AutoRunMode)
+        if auto_run is None or auto_run.data is None:
             return None
-        val = int(dp, 16)
-        return val > 0
+        return auto_run.is_enabled
 
-    @property
-    def extra_state_attributes(self) -> dict[str, Any]:
-        attrs: dict[str, Any] = {}
-        if self._data:
-            raw = _get_dp_raw(self._data, "207")
-            attrs["raw_hex"] = raw
-            if raw is not None:
-                attrs["raw_value"] = int(raw, 16)
-            attrs["dp_id"] = "207 (0xCF)"
-        return attrs
+    async def _async_set_auto_run(self, enabled: bool) -> None:
+        """Write the auto-run flag to the device."""
+        if not self._data:
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="device_unavailable"
+            )
+        dp = GenericDP(data=DP(id=207, type=4, len=1, data="01" if enabled else "00"))
+        if not await self.coordinator.async_send_command(self._data, dp):
+            raise HomeAssistantError(
+                translation_domain=DOMAIN, translation_key="cannot_send_command"
+            )
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Enable auto-run mode."""
-        if not self._data:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN, translation_key="device_unavailable"
-            )
-        dp = GenericDP(data=DP(id=207, type=4, len=1, data="01"))
-        if not await self.coordinator.async_send_command(self._data, dp):
-            raise HomeAssistantError(
-                translation_domain=DOMAIN, translation_key="cannot_send_command"
-            )
+        await self._async_set_auto_run(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Disable auto-run mode."""
-        if not self._data:
-            raise HomeAssistantError(
-                translation_domain=DOMAIN, translation_key="device_unavailable"
-            )
-        dp = GenericDP(data=DP(id=207, type=4, len=1, data="00"))
-        if not await self.coordinator.async_send_command(self._data, dp):
-            raise HomeAssistantError(
-                translation_domain=DOMAIN, translation_key="cannot_send_command"
-            )
+        await self._async_set_auto_run(False)
 
