@@ -434,3 +434,84 @@ async def test_bluetooth_discovery_updates_configured_entry(
     # The stored discovered device info was refreshed from the new advertisement.
     assert entry.data["discovered_device_address"] == address
     assert entry.data["discovered_device_name"] == "DS20-NEW"
+
+
+# The dock's own MAC, as it appears inside the ``DS20-<MAC>`` local name.
+DOCK_MAC = "3C8427565A1A"
+DOCK_NAME = f"DS20-{DOCK_MAC}"
+# Address of a BLE relay that rebroadcasts the dock's advertisement.
+RELAY_ADDRESS = "7C:10:15:02:99:B7"
+
+
+async def test_bluetooth_discovery_keys_on_name_not_address(
+    hass: HomeAssistant,
+) -> None:
+    """A relayed advertisement is keyed on the dock MAC from its local name."""
+    entry = _entry(unique_id="3c:84:27:56:5a:1a")
+    entry.add_to_hass(hass)
+
+    # Same dock, rebroadcast by a relay under the relay's own address.
+    info = _service_info(name=DOCK_NAME, address=RELAY_ADDRESS)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_BLUETOOTH},
+        data=info,
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
+@pytest.mark.parametrize(
+    "stored_connection",
+    ["3C:84:27:56:5A:1A", "3c:84:27:56:5a:1a"],
+    ids=["uppercase", "lowercase"],
+)
+async def test_bluetooth_discovery_aborts_for_registered_dock(
+    hass: HomeAssistant, stored_connection: str
+) -> None:
+    """An account-keyed entry that already owns the dock suppresses discovery."""
+    from homeassistant.helpers import device_registry as dr
+
+    entry = _entry(unique_id=USER_ID)
+    entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "group-1_dock")},
+        connections={(dr.CONNECTION_BLUETOOTH, stored_connection)},
+    )
+
+    info = _service_info(name=DOCK_NAME, address=RELAY_ADDRESS)
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_BLUETOOTH},
+        data=info,
+    )
+    await hass.async_block_till_done()
+
+    assert result["type"] is FlowResultType.ABORT
+    assert result["reason"] == "already_configured"
+
+
+async def test_bluetooth_discovery_offers_unknown_dock(hass: HomeAssistant) -> None:
+    """A dock the configured account does not own is still offered for setup."""
+    from homeassistant.helpers import device_registry as dr
+
+    entry = _entry(unique_id=USER_ID)
+    entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={(DOMAIN, "group-1_dock")},
+        connections={(dr.CONNECTION_BLUETOOTH, "3C:84:27:56:5A:1A")},
+    )
+
+    info = _service_info(name="DS20-AABBCCDDEEFF", address="AA:BB:CC:DD:EE:FF")
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": config_entries.SOURCE_BLUETOOTH},
+        data=info,
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "user"
