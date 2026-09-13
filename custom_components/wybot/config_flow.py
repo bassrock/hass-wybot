@@ -18,8 +18,9 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.helpers.device_registry import format_mac
+from homeassistant.helpers.device_registry import CONNECTION_BLUETOOTH, format_mac
 
 from wybot import WyBotHTTPClient, WybotAuthError, WybotConnectionError
 
@@ -30,6 +31,31 @@ _LOGGER = logging.getLogger(__name__)
 # Key for storing discovered device info in config entry data
 CONF_DISCOVERED_DEVICE_ADDRESS = "discovered_device_address"
 CONF_DISCOVERED_DEVICE_NAME = "discovered_device_name"
+
+DOCK_NAME_PREFIX = "DS20-"
+
+
+def _dock_mac_from_local_name(name: str) -> str | None:
+    """Return the dock MAC encoded in a ``DS20-<MAC>`` BLE local name.
+
+    Returns ``None`` when the name is not a dock advertisement or does not
+    carry a well-formed MAC.
+    """
+    if not name.startswith(DOCK_NAME_PREFIX):
+        return None
+    raw = name.removeprefix(DOCK_NAME_PREFIX)
+    if len(raw) != 12:
+        return None
+    try:
+        int(raw, 16)
+    except ValueError:
+        return None
+    return format_mac(raw)
+
+
+def _normalize_mac(mac: str) -> str:
+    """Return a MAC stripped of separators and case for comparison."""
+    return mac.replace(":", "").replace("-", "").replace(".", "").lower()
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -96,10 +122,25 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
             discovery_info.address,
         )
 
-        # Use the MAC address as unique ID
-        await self.async_set_unique_id(format_mac(discovery_info.address))
-        # If this dock is already configured, refresh its stored discovered
-        # address/name (they can change) instead of just aborting.
+        # The advertising address is not a stable identity for a dock. BLE
+        # relays (smart-home panels, some hubs) rebroadcast advertisements they
+        # overhear under their own address, and a dock that switches to a
+        # resolvable private address changes address on its own. Both make the
+        # same physical dock look like new hardware every time. The dock's
+        # local name is ``DS20-<factory MAC>``, so prefer that as the identity
+        # and fall back to the address only when the name carries no MAC.
+        dock_mac = _dock_mac_from_local_name(discovery_info.name)
+
+        # A configured entry is keyed on the WyBot account, not on any one
+        # dock, so unique_id alone cannot tell us whether this dock is already
+        # covered. Ask the device registry instead.
+        if dock_mac is not None and self._async_dock_is_registered(dock_mac):
+            return self.async_abort(reason="already_configured")
+
+        await self.async_set_unique_id(dock_mac or format_mac(discovery_info.address))
+        # Older entries were keyed on the dock MAC; keep honoring that, and
+        # refresh the stored discovered address/name (they can change) instead
+        # of just aborting.
         self._abort_if_unique_id_configured(
             updates={
                 CONF_DISCOVERED_DEVICE_ADDRESS: discovery_info.address,
@@ -111,11 +152,35 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
         self._discovery_info = discovery_info
 
         # Determine device type from name
-        device_type = "DS20 Dock" if discovery_info.name.startswith("DS20-") else "Robot"
+        device_type = (
+            "DS20 Dock"
+            if discovery_info.name.startswith(DOCK_NAME_PREFIX)
+            else "Robot"
+        )
         self.context["title_placeholders"] = {"name": f"WyBot {device_type}"}
 
         # Proceed to user step to collect credentials
         return await self.async_step_user()
+
+    @callback
+    def _async_dock_is_registered(self, dock_mac: str) -> bool:
+        """Return True when a configured entry already owns this dock.
+
+        Matching is done on the normalized MAC because dock devices created by
+        older releases stored their Bluetooth connection uppercased.
+        """
+        wanted = _normalize_mac(dock_mac)
+        device_registry = dr.async_get(self.hass)
+        for entry in self._async_current_entries(include_ignore=False):
+            for device in dr.async_entries_for_config_entry(
+                device_registry, entry.entry_id
+            ):
+                for conn_type, conn_value in device.connections:
+                    if conn_type == CONNECTION_BLUETOOTH and (
+                        _normalize_mac(conn_value) == wanted
+                    ):
+                        return True
+        return False
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
