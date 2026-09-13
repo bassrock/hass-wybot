@@ -699,13 +699,11 @@ class WyBotCoordinator(DataUpdateCoordinator):
             True if command was sent successfully via either BLE or MQTT
         """
         device_id = group.device.device_id
-        ble_name = None
 
-        # Prefer docker BLE name (dock has BLE, relays to robot)
-        if group.docker and group.docker.ble_name:
-            ble_name = group.docker.ble_name
-        elif group.device and group.device.ble_name:
-            ble_name = group.device.ble_name
+        # Prefer docker BLE name (dock has BLE, relays to robot). ble_owner_id
+        # is the half of the group that owns that radio, which is who the
+        # response DPs have to be filed under -- see _update_from_ble_dps.
+        ble_name, ble_owner_id = self._get_device_ble_info(group)
 
         # Check if BLE should be recovered for this device
         self._maybe_recover_ble(device_id)
@@ -737,9 +735,11 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     # Reset failure count on success
                     self._ble_command_failures[device_id] = 0
 
-                    # Update state from BLE response if we got DPs
-                    if ble_dps:
-                        self._update_from_ble_dps(group, device_id, ble_dps)
+                    # Update state from BLE response if we got DPs. These come
+                    # off the same radio the status poll uses, so they must be
+                    # filed under the same half of the group the poll writes to.
+                    if ble_dps and ble_owner_id is not None:
+                        self._update_from_ble_dps(group, ble_owner_id, ble_dps)
 
                     return True
 
@@ -821,7 +821,10 @@ class WyBotCoordinator(DataUpdateCoordinator):
 
         Args:
             group: The device group to update
-            device_id: The device ID
+            device_id: The half of the group that owns the radio these DPs
+                arrived on, not the robot the command was aimed at. Group.get_dp
+                reads device.dps before docker.dps, so DPs filed under the wrong
+                half shadow every later status poll instead of merging with it.
             dps: List of DP dicts from BLE response
         """
         if not dps:
@@ -850,8 +853,13 @@ class WyBotCoordinator(DataUpdateCoordinator):
                     device_id,
                 )
 
-            # Record that we got data
-            self._last_mqtt_data[device_id] = datetime.now(timezone.utc)
+            # Record that we got data. This arrived over BLE, so it counts as
+            # a BLE poll: filing it under _last_mqtt_data made the "last MQTT
+            # communication" diagnostic report BLE traffic and mask a cloud
+            # path that had actually gone silent.
+            self._last_ble_poll[device_id] = datetime.now(timezone.utc)
+            self._data_source[device_id] = "ble"
+            self._ble_available[device_id] = True
 
             # Trigger a state update
             self.async_set_updated_data(self.data)

@@ -24,7 +24,7 @@ from custom_components.wybot.wybot_coordinator import (
     WyBotCoordinator,
 )
 from wybot import WybotAuthError
-from wybot.dp_models import DP, CleaningStatus
+from wybot.dp_models import DP, CleaningStatus, Dock, DockStatus
 from wybot.models import Group
 from wybot.mqtt_client import WyBotMQTTClient
 
@@ -249,7 +249,10 @@ async def test_update_from_ble_dps_docker(hass: HomeAssistant) -> None:
     coord.data = {GROUP_ID: group}
     coord._update_from_ble_dps(group, DOCKER_ID, [{"id": 11, "type": 4, "len": 1, "data": "00"}])
     assert "11" in group.docker.dps
-    assert DOCKER_ID in coord._last_mqtt_data
+    # DPs off a BLE command response count as BLE freshness, not MQTT.
+    assert DOCKER_ID in coord._last_ble_poll
+    assert coord._data_source[DOCKER_ID] == "ble"
+    assert DOCKER_ID not in coord._last_mqtt_data
 
 
 async def test_update_from_ble_dps_device(hass: HomeAssistant) -> None:
@@ -428,6 +431,73 @@ async def test_async_send_command_ble_success(hass: HomeAssistant) -> None:
     assert await coord.async_send_command(group, dp) is True
     assert coord._ble_command_failures[DEVICE_ID] == 0
     coord.wybot_mqtt_client.send_write_command_for_device.assert_not_called()
+
+
+async def test_async_send_command_files_ble_response_under_radio_owner(
+    hass: HomeAssistant,
+) -> None:
+    """A dock-relayed command response belongs to the dock, not the robot.
+
+    The command is aimed at the robot but travels over the dock's radio, so
+    filing the response under the robot splits one physical data stream across
+    both halves of the group.
+    """
+    coord = make_coordinator(hass)
+    group = make_group()
+    coord.data = {GROUP_ID: group}
+    dp = group.device.dps["0"]
+    coord.wybot_ble_client.send_command.return_value = (
+        True,
+        [{"id": 11, "type": 4, "len": 1, "data": "01"}],  # Dock: RETURNING
+    )
+    assert await coord.async_send_command(group, dp) is True
+    assert "11" in group.docker.dps
+    assert "11" not in group.device.dps
+
+
+async def test_ble_command_response_does_not_shadow_later_poll(
+    hass: HomeAssistant,
+) -> None:
+    """A later status poll must win over an earlier command response.
+
+    Group.get_dp reads device.dps before docker.dps, so a response filed under
+    the robot outranks every subsequent status poll, which only ever writes the
+    dock. The entity then freezes on the command echo.
+    """
+    coord = make_coordinator(hass)
+    group = make_group()
+    coord.data = {GROUP_ID: group}
+    dp = group.device.dps["0"]
+
+    # Robot is sent home; the dock echoes DP 11 = RETURNING.
+    coord.wybot_ble_client.send_command.return_value = (
+        True,
+        [{"id": 11, "type": 4, "len": 1, "data": "01"}],
+    )
+    await coord.async_send_command(group, dp)
+    assert group.get_dp(Dock).status is DockStatus.RETURNING
+
+    # It arrives, and the next status poll says so.
+    coord._update_device_dps_from_ble(
+        group, DOCKER_ID, [{"id": 11, "type": 4, "len": 1, "data": "00"}]
+    )
+    assert group.get_dp(Dock).status is DockStatus.DOCKED
+
+
+async def test_async_send_command_dockless_response_files_under_device(
+    hass: HomeAssistant,
+) -> None:
+    """With no dock, the robot owns the radio and keeps its own responses."""
+    coord = make_coordinator(hass)
+    group = make_group(with_docker=False)
+    coord.data = {GROUP_ID: group}
+    dp = group.device.dps["0"]
+    coord.wybot_ble_client.send_command.return_value = (
+        True,
+        [{"id": 1, "type": 4, "len": 1, "data": "02"}],
+    )
+    assert await coord.async_send_command(group, dp) is True
+    assert "1" in group.device.dps
 
 
 async def test_async_send_command_ble_device_name(hass: HomeAssistant) -> None:
