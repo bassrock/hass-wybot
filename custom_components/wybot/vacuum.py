@@ -242,6 +242,31 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         dock_status = self._data.get_dp(Dock)
         dock_connection = self._data.get_dp(DockConnectionStatus)
 
+        # The F1 has no dock but still reports DP 11 = DOCKED while it is out
+        # skimming, so on that model the cleaning status has to win. DS20
+        # robots keep the original dock-first order, where a docked robot that
+        # still reports STOPPED must read as DOCKED rather than PAUSED.
+        is_f1 = self._coordinator.is_f1(self._idx)
+
+        # A robot sitting on its dock is not returning to it, whatever a
+        # RETURNING flag still says. Both signals used here track reality --
+        # they read "not docked" and "not charging" for as long as the robot is
+        # out -- whereas a RETURNING status is a command echo that can outlive
+        # the trip: a return_to_base sent to a robot that never moved leaves
+        # DP 11 on RETURNING indefinitely, and it is checked before any docked
+        # test, so it pins the entity to "returning" while the robot is
+        # demonstrably home drawing charge. Skipped for the F1, which has no
+        # dock to sit on and can report charge while it is out skimming.
+        if not is_f1 and (
+            (dock_connection is not None and dock_connection.is_docked)
+            or (
+                battery is not None
+                and battery.charge_state
+                in (BatteryState.CHARGING, BatteryState.CHARGED)
+            )
+        ):
+            return VacuumActivity.DOCKED
+
         # Check if returning to dock via CleaningStatus (DP 0) - primary indicator
         if cleaning_status is not None and cleaning_status.status in (
             CleaningStatusMode.RETURNING_TO_DOCK,
@@ -252,12 +277,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         # Check if returning via Dock DP (fallback for legacy behavior)
         if dock_status is not None and dock_status.status == DockStatus.RETURNING:
             return VacuumActivity.RETURNING
-
-        # The F1 has no dock but still reports DP 11 = DOCKED while it is out
-        # skimming, so on that model the cleaning status has to win. DS20
-        # robots keep the original dock-first order, where a docked robot that
-        # still reports STOPPED must read as DOCKED rather than PAUSED.
-        is_f1 = self._coordinator.is_f1(self._idx)
 
         if is_f1 and cleaning_status is not None:
             activity = _activity_from_cleaning_status(cleaning_status.status)

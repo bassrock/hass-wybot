@@ -138,6 +138,62 @@ async def test_activity_returning_via_dock_dp(hass: HomeAssistant) -> None:
     assert ent.activity == VacuumActivity.RETURNING
 
 
+async def test_activity_docked_beats_stale_returning_dock_dp(
+    hass: HomeAssistant,
+) -> None:
+    """A robot seated on the dock is not returning to it.
+
+    Reproduces a production state: return_to_base was sent to a robot that
+    never moved, leaving DP 11 on RETURNING. DP 11 is checked before any
+    docked test, so the entity stayed on "returning" for over an hour while
+    the dock reported it seated and charging.
+    """
+    coord, _, _ = _coord(
+        hass,
+        device_dps={"11": dp(Dock, id=11, type=4, len=1, data="01")},  # RETURNING
+        docker_dps={
+            "213": dp(DockConnectionStatus, id=213, type=4, len=1, data="01"),
+            "50": dp(Battery, id=50, type=0, len=2, data="0113"),  # CHARGING, 19%
+        },
+    )
+    ent = WyBotVacuum(idx=IDX, coordinator=coord)
+    assert ent.activity == VacuumActivity.DOCKED
+
+
+async def test_activity_docked_beats_stale_returning_cleaning_status(
+    hass: HomeAssistant,
+) -> None:
+    """Charge flowing outranks a RETURNING cleaning status too."""
+    coord, _, _ = _coord(
+        hass,
+        device_dps={"0": dp(CleaningStatus, id=0, type=4, len=1, data="04")},
+        docker_dps={"50": dp(Battery, id=50, type=0, len=2, data="0250")},  # CHARGED
+    )
+    ent = WyBotVacuum(idx=IDX, coordinator=coord)
+    assert ent.activity == VacuumActivity.DOCKED
+
+
+async def test_activity_returning_still_reported_while_actually_out(
+    hass: HomeAssistant,
+) -> None:
+    """A real trip home must still read RETURNING.
+
+    While the robot is out, both live signals say so: the dock reports no
+    seated robot and no charge is flowing. Guards the fix above against
+    swallowing genuine RETURNING.
+    """
+    coord, _, _ = _coord(
+        hass,
+        device_dps={"11": dp(Dock, id=11, type=4, len=1, data="01")},  # RETURNING
+        docker_dps={
+            "213": dp(DockConnectionStatus, id=213, type=4, len=1, data="00"),
+            "50": dp(Battery, id=50, type=0, len=2, data="0028"),  # unplugged, 40%
+        },
+    )
+    ent = WyBotVacuum(idx=IDX, coordinator=coord)
+    assert ent.activity == VacuumActivity.RETURNING
+
+
 async def test_activity_docked_via_dock_dp(hass: HomeAssistant) -> None:
     # Dock DP 11 data 00 -> DOCKED.
     coord, _, _ = _coord(
