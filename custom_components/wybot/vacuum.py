@@ -196,7 +196,6 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         name = "Unknown"
         model = "Unknown"
         connections: set[tuple[str, str]] = set()
-        via_device = None
         if self._data:
             if self._data.name:
                 name = self._data.name
@@ -211,20 +210,17 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
                     connections.add(
                         (CONNECTION_BLUETOOTH, format_mac(self._data.device.ble_name))
                     )
-            # If dock exists, robot connects via dock
-            if self._data.docker:
-                via_device = (DOMAIN, f"{self._idx}_dock")
         info_kwargs: dict[str, Any] = {
             "identifiers": {(DOMAIN, str(self._idx))},
             "name": name,
             "manufacturer": MANUFACTURER,
             "model": model,
             "connections": connections if connections else None,
-            "via_device": via_device,
         }
-        # HA's DeviceInfo TypedDict types connections/via_device as
-        # non-optional, but this integration stores None to mean "unset"
-        # (preserved for compatibility); cast the loosely-typed kwargs.
+        # HA's DeviceInfo TypedDict types connections as non-optional, but this
+        # integration stores None to mean "unset" (preserved for
+        # compatibility); cast the loosely-typed kwargs. The robot is linked to
+        # its dock in the device registry by __init__, not via DeviceInfo.
         return cast(DeviceInfo, info_kwargs)
 
     @property

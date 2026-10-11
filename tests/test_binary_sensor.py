@@ -60,7 +60,7 @@ async def test_robot_charging_on(hass: HomeAssistant) -> None:
     assert attrs["is_fully_charged"] is False
     info = ent.device_info
     assert info["identifiers"] == {("wybot", "grp1")}
-    assert info["via_device"] == ("wybot", "grp1_dock")
+    assert "via_device" not in info
 
 
 async def test_robot_charging_off_and_fully_charged(hass: HomeAssistant) -> None:
@@ -164,7 +164,7 @@ async def test_device_info_no_ble_no_docker(hass: HomeAssistant) -> None:
     ent = WyBotRobotChargingBinarySensor(idx=IDX, coordinator=coord)
     info = ent.device_info
     assert info["connections"] is None
-    assert info["via_device"] is None
+    assert "via_device" not in info
 
 
 async def test_handle_coordinator_update(hass: HomeAssistant) -> None:

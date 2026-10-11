@@ -72,7 +72,7 @@ async def test_robot_battery_sensor(hass: HomeAssistant) -> None:
     assert ent.available is True
     info = ent.device_info
     assert info["identifiers"] == {("wybot", "grp1")}
-    assert info["via_device"] == ("wybot", "grp1_dock")
+    assert "via_device" not in info
     assert ("bluetooth", "CC:BA:97:93:2A:96") in info["connections"]
 
 
@@ -341,7 +341,7 @@ async def test_device_info_no_ble_no_docker(hass: HomeAssistant) -> None:
     ent = WyBotRobotBatterySensor(idx=IDX, coordinator=coord)
     info = ent.device_info
     assert info["connections"] is None
-    assert info["via_device"] is None
+    assert "via_device" not in info
 
 
 async def test_handle_coordinator_update(hass: HomeAssistant) -> None:

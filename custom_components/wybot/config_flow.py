@@ -53,6 +53,16 @@ def _dock_mac_from_local_name(name: str) -> str | None:
     return format_mac(raw)
 
 
+def _form_schema(schema: vol.Schema) -> Any:
+    """Return ``schema`` typed loosely enough for any supported HA version.
+
+    HA 2026.10 types ``async_show_form(data_schema=...)`` as a probatio Schema
+    while still accepting voluptuous at runtime; older releases type it as
+    voluptuous and don't ship probatio. ``Any`` satisfies both under mypy.
+    """
+    return schema
+
+
 def _normalize_mac(mac: str) -> str:
     """Return a MAC stripped of separators and case for comparison."""
     return mac.replace(":", "").replace("-", "").replace(".", "").lower()
@@ -221,7 +231,7 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
                     return self.async_create_entry(title=info["title"], data=entry_data)
 
         return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+            step_id="user", data_schema=_form_schema(STEP_USER_DATA_SCHEMA), errors=errors
         )
 
     async def async_step_reauth(
@@ -265,7 +275,7 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reauth_confirm",
-            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            data_schema=_form_schema(vol.Schema({vol.Required(CONF_PASSWORD): str})),
             description_placeholders={"username": reauth_entry.data[CONF_USERNAME]},
             errors=errors,
         )
@@ -304,14 +314,16 @@ class WyBotConfigFlow(ConfigFlow, domain=DOMAIN):
 
         return self.async_show_form(
             step_id="reconfigure",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(
-                        CONF_USERNAME,
-                        default=reconfigure_entry.data[CONF_USERNAME],
-                    ): str,
-                    vol.Required(CONF_PASSWORD): str,
-                }
+            data_schema=_form_schema(
+                vol.Schema(
+                    {
+                        vol.Required(
+                            CONF_USERNAME,
+                            default=reconfigure_entry.data[CONF_USERNAME],
+                        ): str,
+                        vol.Required(CONF_PASSWORD): str,
+                    }
+                )
             ),
             errors=errors,
         )
@@ -360,7 +372,7 @@ class OptionsFlowHandler(OptionsFlow):
         )
 
         return self.async_show_form(
-            step_id="init", data_schema=options_schema, errors=errors
+            step_id="init", data_schema=_form_schema(options_schema), errors=errors
         )
 
 

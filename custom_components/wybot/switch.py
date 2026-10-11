@@ -121,16 +121,12 @@ class WyBotSwitchBase(SwitchEntity, CoordinatorEntity[WyBotCoordinator]):
             connections.add(
                 (CONNECTION_BLUETOOTH, format_mac(self._data.device.ble_name))
             )
-        via_device = None
-        if self._data and self._data.docker:
-            via_device = (DOMAIN, f"{self._idx}_dock")
         info_kwargs: dict[str, Any] = {
             "identifiers": {(DOMAIN, str(self._idx))},
             "name": self._get_robot_name(),
             "manufacturer": MANUFACTURER,
             "model": self._get_robot_model(),
             "connections": connections if connections else None,
-            "via_device": via_device,
         }
         return cast(DeviceInfo, info_kwargs)
 
