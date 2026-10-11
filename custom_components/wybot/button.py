@@ -46,6 +46,7 @@ async def async_setup_entry(
             if (
                 group
                 and group.docker
+                and coordinator.has_dock(idx)
                 and group.docker.ble_name
                 and wifi_ssid
                 and wifi_password

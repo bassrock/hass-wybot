@@ -669,14 +669,15 @@ async def test_switch_device_info(hass: HomeAssistant) -> None:
     assert info["name"] == "My Pool"
     assert info["model"] == F1_DEVICE_TYPE
     assert ("bluetooth", "CC:BA:97:93:2A:96") in info["connections"]
-    # The F1 has no dock, so nothing to hang the device off.
-    assert info["via_device"] is None
+    # The robot-to-dock link lives in the device registry, not DeviceInfo.
+    assert "via_device" not in info
 
 
 async def test_switch_device_info_via_dock(hass: HomeAssistant) -> None:
+    # Deprecated in HA (removed 2027.8) -- must not be sent even with a dock.
     coord, _, _ = _f1_coord(hass, with_docker=True)
     ent = WyBotF1AutoRunSwitch(idx=IDX, coordinator=coord)
-    assert ent.device_info["via_device"] == ("wybot", "grp1_dock")
+    assert "via_device" not in ent.device_info
 
 
 async def test_switch_device_info_falls_back_through_names(

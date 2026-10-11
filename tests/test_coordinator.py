@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from datetime import datetime, timedelta, timezone
 import time
@@ -874,11 +875,32 @@ async def test_async_update_data_no_data(hass: HomeAssistant) -> None:
     assert coord._connection_available is False
 
 
-async def test_async_update_data_auth_error(hass: HomeAssistant) -> None:
+async def test_initial_load_does_not_wait_for_presence(hass: HomeAssistant) -> None:
+    """A stalled presence endpoint must not hold up the first refresh (#38)."""
     coord = make_coordinator(hass)
-    coord.wybot_http_client.register_presence.side_effect = WybotAuthError("bad")
-    with pytest.raises(ConfigEntryAuthFailed):
-        await coord._async_update_data()
+    coord.wybot_http_client.get_indexed_current_grouped_devices.return_value = {
+        GROUP_ID: make_group()
+    }
+    stalled = asyncio.Event()
+
+    async def _never_returns() -> bool:
+        await stalled.wait()
+        return False
+
+    coord.wybot_http_client.register_presence.side_effect = _never_returns
+    async with asyncio.timeout(5):
+        result = await coord._async_update_data()
+    assert GROUP_ID in result
+    coord.wybot_http_client.register_presence.assert_called_once()
+    assert coord._presence_task is not None and not coord._presence_task.done()
+
+    # While that registration is in flight, later refreshes don't stack more.
+    coord._schedule_presence_registration()
+    coord.wybot_http_client.register_presence.assert_called_once()
+
+    stalled.set()
+    await hass.async_block_till_done()
+    assert coord._presence_task.done()
 
 
 async def test_async_update_data_config_entry_auth_failed_passthrough(
@@ -960,13 +982,16 @@ async def test_maybe_refresh_http_session_runs(hass: HomeAssistant) -> None:
     coord._mqtt_connected = True
     coord.wybot_mqtt_client.is_connected.return_value = True
     await coord._maybe_refresh_http_session()
-    coord.wybot_http_client.register_presence.assert_called()
     coord.wybot_http_client.get_devices_and_status.assert_called()
+    await hass.async_block_till_done()
+    coord.wybot_http_client.register_presence.assert_called()
 
 
 async def test_maybe_refresh_http_session_auth_error(hass: HomeAssistant) -> None:
     coord = make_coordinator(hass)
-    coord.wybot_http_client.register_presence.side_effect = WybotAuthError("bad")
+    coord.wybot_http_client.get_devices_and_status.side_effect = WybotAuthError(
+        "bad"
+    )
     with pytest.raises(WybotAuthError):
         await coord._maybe_refresh_http_session()
 
@@ -975,9 +1000,35 @@ async def test_maybe_refresh_http_session_non_critical_error(
     hass: HomeAssistant,
 ) -> None:
     coord = make_coordinator(hass)
-    coord.wybot_http_client.register_presence.side_effect = RuntimeError("meh")
+    coord.wybot_http_client.get_devices_and_status.side_effect = RuntimeError("meh")
     # swallowed, no raise
     await coord._maybe_refresh_http_session()
+
+
+async def test_presence_failure_is_swallowed(hass: HomeAssistant) -> None:
+    coord = make_coordinator(hass)
+    coord.wybot_http_client.register_presence.return_value = False
+    coord._schedule_presence_registration()
+    await hass.async_block_till_done()
+    assert coord._presence_task is not None and coord._presence_task.done()
+    assert coord._presence_task.exception() is None
+
+
+async def test_has_dock(hass: HomeAssistant) -> None:
+    coord = make_coordinator(hass)
+    placeholder = make_group()
+    assert placeholder.docker is not None
+    placeholder.docker.docker_id = ""
+    coord.data = {
+        "real": make_group(),
+        "none": make_group(with_docker=False),
+        "placeholder": placeholder,
+    }
+    assert coord.has_dock("real") is True
+    assert coord.has_dock("none") is False
+    # Dockless units (C1, F1) can report an empty docker entry (#39).
+    assert coord.has_dock("placeholder") is False
+    assert coord.has_dock("missing") is False
 
 
 async def test_maybe_refresh_http_session_mqtt_keepalive_error(

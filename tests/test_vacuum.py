@@ -65,7 +65,7 @@ async def test_basic_properties(hass: HomeAssistant) -> None:
     assert info["identifiers"] == {("wybot", "grp1")}
     assert info["name"] == "My Pool"
     assert info["model"] == "S2 Pro"
-    assert info["via_device"] == ("wybot", "grp1_dock")
+    assert "via_device" not in info
     assert ("bluetooth", "CC:BA:97:93:2A:96") in info["connections"]
 
 
@@ -91,7 +91,7 @@ async def test_device_info_fallbacks(hass: HomeAssistant) -> None:
     assert info["name"] == "Unknown"
     assert info["model"] == "Unknown"
     assert info["connections"] is None
-    assert info["via_device"] is None
+    assert "via_device" not in info
 
     # name falsy -> device_name.
     group2 = make_group(name="")
@@ -110,7 +110,7 @@ async def test_device_info_no_ble_no_docker(hass: HomeAssistant) -> None:
     ent = WyBotVacuum(idx=IDX, coordinator=coord)
     info = ent.device_info
     assert info["connections"] is None
-    assert info["via_device"] is None
+    assert "via_device" not in info
 
 
 async def test_activity_none_when_no_data(hass: HomeAssistant) -> None:

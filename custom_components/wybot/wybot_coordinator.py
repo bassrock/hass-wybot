@@ -88,6 +88,9 @@ class WyBotCoordinator(DataUpdateCoordinator):
     # Track BLE availability per device
     _ble_available: dict[str, bool]  # device_id -> last BLE poll succeeded
 
+    # In-flight best-effort presence registration, if any
+    _presence_task: asyncio.Task[None] | None = None
+
     # MQTT lazy connection state
     _mqtt_connected: bool = False
     # Time of the most recent successful MQTT (re)connect (diagnostic)
@@ -399,6 +402,28 @@ class WyBotCoordinator(DataUpdateCoordinator):
             await self.wybot_mqtt_client.ensure_device_sends_statuses(device_id)
             self._last_status_query_time = time.time()
 
+    def _schedule_presence_registration(self) -> None:
+        """Register presence with the WyBot cloud in the background.
+
+        Presence is best-effort, and the endpoint has been seen to stall for
+        ~40s before failing, so it must not run inside an update: there it
+        spent the shared UPDATE_TIMEOUT budget and could fail config entry
+        setup. Skipped while a previous registration is still in flight.
+        """
+        if self._presence_task is not None and not self._presence_task.done():
+            return
+        assert self.config_entry is not None
+        self._presence_task = self.config_entry.async_create_background_task(
+            self.hass,
+            self._async_register_presence(),
+            "wybot_register_presence",
+        )
+
+    async def _async_register_presence(self) -> None:
+        """Run one presence registration, logging rather than raising."""
+        if not await self.wybot_http_client.register_presence():
+            _LOGGER.debug("Presence registration did not succeed; will retry later")
+
     async def _maybe_refresh_http_session(self) -> None:
         """Periodically refresh HTTP session to keep MQTT fallback ready.
 
@@ -414,8 +439,8 @@ class WyBotCoordinator(DataUpdateCoordinator):
             return
 
         _LOGGER.debug("Refreshing HTTP session to keep MQTT fallback ready")
+        self._schedule_presence_registration()
         try:
-            await self.wybot_http_client.register_presence()
             await self.wybot_http_client.get_devices_and_status()
             self._last_http_refresh_time = current_time
         except WybotAuthError:
@@ -448,7 +473,7 @@ class WyBotCoordinator(DataUpdateCoordinator):
                 if not self.initial_load:
                     self.initial_load = True
                     _LOGGER.info("Initial load: fetching device list from HTTP API")
-                    await self.wybot_http_client.register_presence()
+                    self._schedule_presence_registration()
                     await self.http_refresh_data()
 
                     # Log device BLE names for debugging
@@ -945,6 +970,15 @@ class WyBotCoordinator(DataUpdateCoordinator):
         Right now we only support WyBot vacuums so we return everything, but this could be expanded
         """
         return [deviceId for [deviceId, device] in self.data.items()]
+
+    def has_dock(self, idx: str) -> bool:
+        """Return whether the group at ``idx`` has a physical dock.
+
+        Units without a dock (C1, F1, ...) can still report a placeholder
+        docker entry with an empty id, so a docker object alone is not enough.
+        """
+        group = self.data.get(idx) if self.data else None
+        return bool(group and group.docker and group.docker.docker_id)
 
     def is_f1(self, idx: str) -> bool:
         """Return whether the group at ``idx`` is an F1 skimmer.

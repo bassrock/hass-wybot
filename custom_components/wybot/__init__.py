@@ -32,11 +32,39 @@ type WyBotConfigEntry = ConfigEntry[WyBotCoordinator]
 def _device_identifiers(coordinator: WyBotCoordinator) -> set[tuple[str, str]]:
     """Return the device-registry identifiers currently backed by the account."""
     identifiers: set[tuple[str, str]] = set()
-    for idx, group in coordinator.data.items():
+    for idx in coordinator.data:
         identifiers.add((DOMAIN, str(idx)))
-        if getattr(group, "docker", None):
+        if coordinator.has_dock(idx):
             identifiers.add((DOMAIN, f"{idx}_dock"))
     return identifiers
+
+
+@callback
+def _async_link_robots_to_docks(
+    hass: HomeAssistant, entry: WyBotConfigEntry, coordinator: WyBotCoordinator
+) -> None:
+    """Record in the device registry that each robot is reached via its dock.
+
+    This used to be the ``via_device`` key of the robot's DeviceInfo, which HA
+    deprecated in favour of ``via_device_id`` (a registry id, removed in HA
+    2027.8). Linking here works on every supported HA version, and runs after
+    the platforms have registered both devices. Devices are looked up within
+    this entry because identifiers are no longer unique across entries.
+    """
+    registry = dr.async_get(hass)
+    by_identifier = {
+        identifier: device
+        for device in dr.async_entries_for_config_entry(registry, entry.entry_id)
+        for identifier in device.identifiers
+    }
+    for idx in coordinator.data:
+        if not coordinator.has_dock(idx):
+            continue
+        robot = by_identifier.get((DOMAIN, str(idx)))
+        dock = by_identifier.get((DOMAIN, f"{idx}_dock"))
+        if robot is None or dock is None or robot.via_device_id == dock.id:
+            continue
+        registry.async_update_device(robot.id, via_device_id=dock.id)
 
 
 @callback
@@ -48,9 +76,10 @@ def _async_purge_stale_devices(
     current = _device_identifiers(coordinator)
     for device in dr.async_entries_for_config_entry(registry, entry.entry_id):
         if not device.identifiers & current:
-            registry.async_update_device(
-                device.id, remove_config_entry_id=entry.entry_id
-            )
+            # Not async_update_device(remove_config_entry_id=...), which HA
+            # deprecated (removed in 2027.8) now that a device belongs to a
+            # single config entry. These devices only ever belong to this one.
+            registry.async_remove_device(device.id)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: WyBotConfigEntry) -> bool:
@@ -77,10 +106,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: WyBotConfigEntry) -> boo
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
-    # Remove devices that are no longer present on the account (stale-devices),
-    # now and on every subsequent coordinator update.
+    # Remove devices that are no longer present on the account (stale-devices)
+    # and link robots to their docks, now and on every coordinator update.
     def _purge() -> None:
         _async_purge_stale_devices(hass, entry, coordinator)
+        _async_link_robots_to_docks(hass, entry, coordinator)
 
     _purge()
     entry.async_on_unload(coordinator.async_add_listener(_purge))

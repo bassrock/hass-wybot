@@ -55,10 +55,13 @@ async def async_setup_entry(
             entities.extend(
                 [
                     WyBotRobotChargingBinarySensor(idx=device_id, coordinator=coordinator),
-                    WyBotDockChargingBinarySensor(idx=device_id, coordinator=coordinator),
                     WyBotFullyChargedBinarySensor(idx=device_id, coordinator=coordinator),
                 ]
             )
+            if coordinator.has_dock(device_id):
+                entities.append(
+                    WyBotDockChargingBinarySensor(idx=device_id, coordinator=coordinator)
+                )
         if entities:
             async_add_entities(entities)
 
@@ -124,21 +127,17 @@ class WyBotBinarySensorBase(BinarySensorEntity, CoordinatorEntity[WyBotCoordinat
             connections.add(
                 (CONNECTION_BLUETOOTH, format_mac(self._data.device.ble_name))
             )
-        # If dock exists, robot connects via dock; otherwise standalone
-        via_device = None
-        if self._data and self._data.docker:
-            via_device = (DOMAIN, f"{self._idx}_dock")
         info_kwargs: dict[str, Any] = {
             "identifiers": {(DOMAIN, str(self._idx))},
             "name": self._get_robot_name(),
             "manufacturer": MANUFACTURER,
             "model": self._get_robot_model(),
             "connections": connections if connections else None,
-            "via_device": via_device,
         }
-        # HA's DeviceInfo TypedDict types connections/via_device as
-        # non-optional, but this integration stores None to mean "unset"
-        # (preserved for compatibility); cast the loosely-typed kwargs.
+        # HA's DeviceInfo TypedDict types connections as non-optional, but this
+        # integration stores None to mean "unset" (preserved for
+        # compatibility); cast the loosely-typed kwargs. The robot is linked to
+        # its dock in the device registry by __init__, not via DeviceInfo.
         return cast(DeviceInfo, info_kwargs)
 
 
@@ -187,7 +186,13 @@ class WyBotDockBinarySensorBase(WyBotBinarySensorBase):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Return device information for the solar dock."""
+        """Return device information for the solar dock.
+
+        Units without a dock report these entities on the robot itself, so no
+        phantom dock device is created for them.
+        """
+        if not self.coordinator.has_dock(self._idx):
+            return super().device_info
         dock_name = "Solar Dock"
         dock_model = "Unknown"
         connections: set[tuple[str, str]] = set()
