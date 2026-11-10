@@ -26,6 +26,21 @@ def auto_enable_custom_integrations(enable_custom_integrations):
     yield
 
 
+@pytest.fixture(autouse=True)
+def auto_mock_bluetooth(mock_bluetooth):
+    """Keep Home Assistant's bluetooth stack from touching real hardware.
+
+    The wybot integration depends on ``bluetooth_adapters`` and declares a
+    ``bluetooth`` matcher, so loading it (or its config flow) sets up Home
+    Assistant's ``bluetooth`` component. Without mocking, newer habluetooth
+    releases open a real BlueZ management socket during setup, which
+    ``pytest-socket`` blocks on the Linux CI runners. ``mock_bluetooth`` (from
+    pytest-homeassistant-custom-component) mocks the scanner start and the
+    BlueZ controller so setup completes with no real I/O.
+    """
+    yield
+
+
 @pytest.fixture
 def sample_dp_data():
     """Return sample DP data dicts for testing."""
