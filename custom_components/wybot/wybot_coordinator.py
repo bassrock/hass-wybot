@@ -40,6 +40,12 @@ MAX_RETRY_DELAY = 10.0
 # Overall update timeout — safety net; individual operations have their own timeouts
 UPDATE_TIMEOUT = 120
 
+# Max time the BLE-primary poll may spend per update cycle. Bounds an
+# out-of-range device whose BLE connect hangs so it cannot consume the whole
+# UPDATE_TIMEOUT budget and starve the MQTT/availability path (those devices
+# simply fall back to MQTT for this cycle).
+BLE_POLL_BUDGET = 25
+
 # BLE failure recovery — re-enable BLE after this many seconds
 BLE_RECOVERY_SECONDS = 300  # 5 minutes
 
@@ -494,8 +500,24 @@ class WyBotCoordinator(DataUpdateCoordinator):
                             )
                     self._initial_query_start_time = time.time()
 
-                # BLE FIRST - try all devices via BLE (primary)
-                devices_needing_mqtt = await self._poll_all_devices_via_ble()
+                # BLE FIRST - try all devices via BLE (primary). Bound it so an
+                # out-of-range device whose BLE connect hangs cannot consume the
+                # whole UPDATE_TIMEOUT budget; on timeout every device simply
+                # falls back to MQTT for this cycle and availability still flips.
+                try:
+                    async with asyncio.timeout(BLE_POLL_BUDGET):
+                        devices_needing_mqtt = await self._poll_all_devices_via_ble()
+                except TimeoutError:
+                    _LOGGER.warning(
+                        "BLE poll exceeded %ss budget; using MQTT fallback for all devices",
+                        BLE_POLL_BUDGET,
+                    )
+                    devices_needing_mqtt = []
+                    for group in self.data.values():
+                        if group.docker:
+                            devices_needing_mqtt.append(group.docker.docker_id)
+                        if group.device:
+                            devices_needing_mqtt.append(group.device.device_id)
 
                 # MQTT FALLBACK - only for devices that failed BLE
                 if devices_needing_mqtt:
