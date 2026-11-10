@@ -929,12 +929,40 @@ async def test_async_update_data_config_entry_not_ready_passthrough(
             await coord._async_update_data()
 
 
-async def test_async_update_data_timeout(hass: HomeAssistant) -> None:
+async def test_async_update_data_ble_budget_falls_back_to_mqtt(
+    hass: HomeAssistant,
+) -> None:
+    """A BLE poll that exceeds its budget falls back to MQTT, not UpdateFailed.
+
+    The BLE-primary poll is bounded by BLE_POLL_BUDGET; when it times out, every
+    device uses MQTT for that cycle and availability still flips, instead of the
+    whole update failing and the entities going unavailable.
+    """
     coord = make_coordinator(hass)
     coord.initial_load = True
     coord.data = {GROUP_ID: make_group()}
+    coord._mqtt_connected = True
+    coord.wybot_mqtt_client.is_connected.return_value = True
     with patch.object(
         coord, "_poll_all_devices_via_ble", side_effect=TimeoutError("slow")
+    ):
+        result = await coord._async_update_data()
+    assert result == coord.data
+    assert coord._connection_available is True
+    # The group's docker + device were handed to the MQTT fallback.
+    coord.wybot_mqtt_client.ensure_device_sends_statuses.assert_called()
+
+
+async def test_async_update_data_timeout(hass: HomeAssistant) -> None:
+    """An overall UPDATE_TIMEOUT (outside the BLE budget) still fails the cycle."""
+    coord = make_coordinator(hass)
+    coord.initial_load = True
+    coord.data = {GROUP_ID: make_group()}
+    with (
+        patch.object(coord, "_poll_all_devices_via_ble", return_value=[]),
+        patch.object(
+            coord, "_maybe_refresh_http_session", side_effect=TimeoutError("slow")
+        ),
     ):
         with pytest.raises(UpdateFailed):
             await coord._async_update_data()
