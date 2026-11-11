@@ -100,6 +100,11 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
     _last_state_write: datetime | None = None
     _last_availability: bool | None = None
     _last_charging_state: BatteryState | None = None
+    # Latches the user/automation-commanded activity for models (S2/DS20)
+    # whose BLE status never reports CLEANING: the robot runs while DP 0
+    # stays on STOPPED, so without this the entity falls back to PAUSED
+    # mid-clean. Authoritative docked/charging/returning states still win.
+    _commanded_activity: VacuumActivity | None = None
 
     def __init__(self, idx: str, coordinator: WyBotCoordinator) -> None:
         """Initialize the WyBot vacuum entity."""
@@ -111,6 +116,7 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         self._last_state_write = None
         self._last_availability = None
         self._last_charging_state = None
+        self._commanded_activity = None
 
     @callback
     def _handle_coordinator_update(self) -> None:
@@ -139,6 +145,15 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
             and previous_charging_state != current_charging_state
         )
         self._last_charging_state = current_charging_state
+
+        # A docked/charging robot has reached an authoritative state; drop
+        # any stale commanded-activity latch so a later ambiguous reading
+        # cannot resurrect a finished cleaning run.
+        if current_charging_state in (
+            BatteryState.CHARGING,
+            BatteryState.CHARGED,
+        ):
+            self._commanded_activity = None
 
         # Always write state if:
         # 1. Availability changed (to record unavailable/available transitions)
@@ -293,6 +308,16 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
 
         if cleaning_status is not None:
             activity = _activity_from_cleaning_status(cleaning_status.status)
+            # S2/DS20 robots run without ever reporting CLEANING: DP 0 stays
+            # on STOPPED for the whole clean, which maps to PAUSED. When the
+            # last command we sent was start (or return), trust that command
+            # over the ambiguous STOPPED reading. Docked/charging and an
+            # explicit RETURNING status are checked earlier, so they win.
+            if activity == VacuumActivity.PAUSED and self._commanded_activity in (
+                VacuumActivity.CLEANING,
+                VacuumActivity.RETURNING,
+            ):
+                return self._commanded_activity
             if activity is not None:
                 return activity
             # The F1 parks itself in standby (0x0f) rather than reporting a
@@ -367,14 +392,18 @@ class WyBotVacuum(StateVacuumEntity, CoordinatorEntity[WyBotCoordinator]):
         await self._async_send_command(
             CleaningStatus(status=CleaningStatusMode.STOPPED)
         )
+        # Stop clears the latch; the DP-derived state governs from here.
+        self._commanded_activity = None
 
     async def async_start(self) -> None:
         """Start the vacuum cleaner."""
         await self._async_send_command(
             CleaningStatus(status=CleaningStatusMode.CLEANING)
         )
+        self._commanded_activity = VacuumActivity.CLEANING
 
     async def async_return_to_base(self, **kwargs: Any) -> None:
         """Return the vacuum cleaner to the dock."""
         await self._async_send_command(Dock(status=DockStatus.RETURNING))
+        self._commanded_activity = VacuumActivity.RETURNING
 

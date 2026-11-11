@@ -383,3 +383,99 @@ async def test_handle_coordinator_update_idx_missing(hass: HomeAssistant) -> Non
     ent._handle_coordinator_update()
     # _data retained; battery None branch (no dps) also exercised.
     assert ent._data is group
+
+
+async def test_activity_cleaning_latched_despite_stopped_report(
+    hass: HomeAssistant,
+) -> None:
+    """S2/DS20 keeps DP 0 on STOPPED while cleaning; a prior start command
+    must make the entity read CLEANING rather than the PAUSED fallback."""
+    coord, _, _ = _coord(
+        hass,
+        device_dps={
+            "0": dp(CleaningStatus, id=0, type=4, len=1, data="01"),
+            "50": dp(Battery, id=50, type=0, len=2, data="004b"),
+        },
+    )
+    coord.async_send_command = AsyncMock(return_value=True)
+    ent = WyBotVacuum(idx=IDX, coordinator=coord)
+    # Without a command the same DPs read PAUSED (existing behavior).
+    assert ent.activity == VacuumActivity.PAUSED
+    await ent.async_start()
+    assert ent.activity == VacuumActivity.CLEANING
+
+
+async def test_activity_returning_latched_despite_stopped_report(
+    hass: HomeAssistant,
+) -> None:
+    """A return command on a robot that never echoes RETURNING should still
+    read RETURNING instead of the PAUSED fallback while it is out of the dock."""
+    coord, _, _ = _coord(
+        hass,
+        device_dps={
+            "0": dp(CleaningStatus, id=0, type=4, len=1, data="01"),
+            "50": dp(Battery, id=50, type=0, len=2, data="004b"),
+        },
+    )
+    coord.async_send_command = AsyncMock(return_value=True)
+    ent = WyBotVacuum(idx=IDX, coordinator=coord)
+    await ent.async_return_to_base()
+    assert ent.activity == VacuumActivity.RETURNING
+
+
+async def test_activity_stop_clears_cleaning_latch(hass: HomeAssistant) -> None:
+    """Stop clears the latch so the robot reads PAUSED, not a stale CLEANING."""
+    coord, _, _ = _coord(
+        hass,
+        device_dps={
+            "0": dp(CleaningStatus, id=0, type=4, len=1, data="01"),
+            "50": dp(Battery, id=50, type=0, len=2, data="004b"),
+        },
+    )
+    coord.async_send_command = AsyncMock(return_value=True)
+    ent = WyBotVacuum(idx=IDX, coordinator=coord)
+    await ent.async_start()
+    assert ent.activity == VacuumActivity.CLEANING
+    await ent.async_stop()
+    assert ent.activity == VacuumActivity.PAUSED
+
+
+async def test_commanded_latch_does_not_override_docked(
+    hass: HomeAssistant,
+) -> None:
+    """Docked/charging is authoritative and beats a stale CLEANING latch."""
+    coord, _, _ = _coord(
+        hass,
+        device_dps={
+            "0": dp(CleaningStatus, id=0, type=4, len=1, data="01"),
+            # 01 -> charging -> docked
+            "50": dp(Battery, id=50, type=0, len=2, data="014b"),
+        },
+    )
+    coord.async_send_command = AsyncMock(return_value=True)
+    ent = WyBotVacuum(idx=IDX, coordinator=coord)
+    await ent.async_start()
+    assert ent.activity == VacuumActivity.DOCKED
+
+
+async def test_handle_update_clears_latch_when_charging(
+    hass: HomeAssistant,
+) -> None:
+    """A charging coordinator update drops the commanded-activity latch."""
+    coord, _, group = _coord(
+        hass,
+        device_dps={
+            "0": dp(CleaningStatus, id=0, type=4, len=1, data="01"),
+            "50": dp(Battery, id=50, type=0, len=2, data="004b"),
+        },
+    )
+    coord.async_send_command = AsyncMock(return_value=True)
+    ent = WyBotVacuum(idx=IDX, coordinator=coord)
+    await add_entity(hass, ent, domain="vacuum")
+    await ent.async_start()
+    assert ent._commanded_activity == VacuumActivity.CLEANING
+    # Robot reaches the dock and starts charging.
+    group.device.dps["50"] = dp(Battery, id=50, type=0, len=2, data="014b")
+    ent._handle_coordinator_update()
+    assert ent._commanded_activity is None
+    assert ent.activity == VacuumActivity.DOCKED
